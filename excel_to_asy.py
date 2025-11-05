@@ -691,31 +691,103 @@ def generate_asy_file(excel_path, output_path=None):
     return output_path
 
 
+def show_file_dialog():
+    """Show a GUI popup to select input Excel file and output .asy file"""
+    import tkinter as tk
+    from tkinter import filedialog, messagebox
+    
+    # Create root window (hidden)
+    root = tk.Tk()
+    root.withdraw()  # Hide the main window
+    root.attributes('-topmost', True)  # Bring to front
+    
+    # Ask for input Excel file
+    excel_file = filedialog.askopenfilename(
+        title="Select Excel File",
+        filetypes=[
+            ("Excel files", "*.xlsx *.xlsm"),
+            ("All files", "*.*")
+        ]
+    )
+    
+    if not excel_file:
+        print("No input file selected. Exiting.")
+        return None, None
+    
+    # Ask for output .asy file
+    output_file = filedialog.asksaveasfilename(
+        title="Save .asy File As",
+        defaultextension=".asy",
+        filetypes=[
+            ("ASY files", "*.asy"),
+            ("All files", "*.*")
+        ],
+        initialfile=Path(excel_file).stem + ".asy"
+    )
+    
+    if not output_file:
+        print("No output file selected. Exiting.")
+        return None, None
+    
+    root.destroy()
+    return excel_file, output_file
+
+
 def main():
-    parser = argparse.ArgumentParser(
-        description="Convert GatorBio Assay Form Excel file to .asy file"
-    )
-    parser.add_argument(
-        "excel_file",
-        help="Path to the Excel file (.xlsx)"
-    )
-    parser.add_argument(
-        "-o", "--output",
-        help="Output .asy file path (default: same name as Excel file)"
-    )
-    
-    args = parser.parse_args()
-    
-    try:
-        generate_asy_file(
-            args.excel_file,
-            args.output
+    # Check if command-line arguments are provided
+    if len(sys.argv) > 1:
+        # Use command-line mode
+        parser = argparse.ArgumentParser(
+            description="Convert GatorBio Assay Form Excel file to .asy file"
         )
-    except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+        parser.add_argument(
+            "excel_file",
+            help="Path to the Excel file (.xlsx)"
+        )
+        parser.add_argument(
+            "-o", "--output",
+            help="Output .asy file path (default: same name as Excel file)"
+        )
+        
+        args = parser.parse_args()
+        
+        try:
+            generate_asy_file(
+                args.excel_file,
+                args.output
+            )
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
+    else:
+        # Use GUI mode
+        try:
+            excel_file, output_file = show_file_dialog()
+            
+            if excel_file and output_file:
+                generate_asy_file(excel_file, output_file)
+                # Show success message
+                import tkinter as tk
+                from tkinter import messagebox
+                root = tk.Tk()
+                root.withdraw()
+                root.attributes('-topmost', True)
+                messagebox.showinfo("Success", f"Successfully generated:\n{output_file}")
+                root.destroy()
+        except Exception as e:
+            import tkinter as tk
+            from tkinter import messagebox
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes('-topmost', True)
+            messagebox.showerror("Error", f"An error occurred:\n{str(e)}")
+            root.destroy()
+            print(f"Error: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
 
 
 if __name__ == "__main__":

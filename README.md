@@ -1,18 +1,21 @@
 # GatorBio Excel to ASY Converter
 
-This Python program converts a GatorBio Assay Form Excel file (`.xlsx`) into a `.asy` file that can be imported into the GatorBio BLI machine software.
+This Python program converts a GatorBio Assay Form Excel file (`.xlsx` or `.xlsm`) into a `.asy` file that can be imported into the GatorBio BLI machine software.
 
 ## Features
 
-- **Plate Layout Parsing**: Reads 96-well plate layouts from the Excel file
-- **Sample Information**: Extracts sample IDs, concentrations, and molecular weights
-- **Assay Steps Configuration**: Parses assay steps (Capture, Association, Baseline, Dissociation, Regeneration)
+- **Simple Table-Based Reading**: Reads data from sequential table rows
+- **Sample Information**: Extracts sample IDs, types, concentrations, and molecular weights
+- **Probe Information**: Extracts probe information for Max Plate configuration
+- **Assay Steps Configuration**: Parses user-defined assay loops and steps
+- **GUI Support**: Interactive file selection dialogs
 - **Complete Configuration**: Generates all required parameters for the GatorBio BLI machine
 
 ## Requirements
 
 - Python 3.6 or higher
 - openpyxl (for reading Excel files)
+- tkinter (usually included with Python, for GUI dialogs)
 
 ## Installation
 
@@ -29,73 +32,87 @@ pip install -r requirements.txt
 
 ## Usage
 
-### Basic Usage
+### GUI Mode (Interactive)
+
+Run the script without any arguments to open file selection dialogs:
 
 ```bash
-python excel_to_asy.py "GatorBio Assay Form.xlsx"
+python excel_to_asy.py
 ```
 
-This will create a `.asy` file with the same name as the Excel file.
+This will:
+1. Open a dialog to select your Excel file (.xlsx or .xlsm)
+2. Open a dialog to choose where to save the .asy file
+3. Show a success message when complete
 
-### Advanced Usage
+### Command Line Mode
 
 ```bash
-python excel_to_asy.py "GatorBio Assay Form.xlsx" -o "output.asy" -u "Your Name" -d "Assay Description"
+python excel_to_asy.py "GatorBio Assay Form.xlsm" -o "output.asy"
 ```
 
 ### Command Line Arguments
 
-- `excel_file`: (Required) Path to the Excel file (.xlsx)
+- `excel_file`: (Required) Path to the Excel file (.xlsx or .xlsm)
 - `-o, --output`: Output .asy file path (default: same name as Excel file)
-- `-u, --user`: User name for the assay (default: "User")
-- `-d, --description`: Assay description (default: "")
 
 ### Example
 
 ```bash
-python excel_to_asy.py "GatorBio Assay Form.xlsx" -u "John Doe" -d "EPO Binding Assay"
+python excel_to_asy.py "GatorBio Assay Form.xlsm" -o "MyAssay.asy"
 ```
 
 ## Excel File Format
 
-The script expects the Excel file to have:
+The script expects an Excel file with three sheets:
 
-1. **96 Well Plate Layout**: 
-   - A header row with "96 Well Plate"
-   - Column numbers (1-12) and row letters (A-H)
-   - Sample information can be entered in cells corresponding to well positions
+### 1. PreExperiment Sheet
+Contains key-value pairs for configuration parameters:
+- Assay name, description, user information
+- Machine settings (temperatures, speeds, times)
+- Shaker settings
 
-2. **Sample Information** (optional):
-   - Column B: Well positions (e.g., "A1", "B1")
-   - Column C: Sample IDs
-   - Column D: Concentrations (µg/mL)
-   - Column E: Molecular Weights (kDa)
+### 2. Experiment Sheet
+Contains two tables:
 
-3. **Assay Steps** (optional):
-   - A header row with "Assay Steps"
-   - Step definitions with:
-     - Step type (Capture/Baseline=0, Association=1, Dissociation=2, Regeneration=3)
-     - Sample column/well position
-     - Speed (rpm)
-     - Time (seconds)
+**SampleInfo Table (Columns C-H, Rows 14-110):**
+- Row 14: Header row
+- Rows 15-110: Data rows (one per well, up to 96 wells)
+- Column C: SampleID
+- Column D: Type (Buffer, Load, Sample, Regeneration, Neutralization, etc.)
+- Column E: Concentration
+- Column F: Molecular Weight
+- Column G: Molar Concentration
+- Column H: Information
 
-If assay steps are not found in the Excel file, the script will use default steps:
-- Capture (120s)
-- Association (120s)
-- Baseline (60s)
-- Dissociation (200s)
-- Regeneration (400s)
+**ProbeInfo (Max Plate) Table (Columns Q-V, Rows 14-110):**
+- Row 14: Header row
+- Rows 15-110: Data rows (one per well, up to 96 wells)
+- Column Q: SampleID/Name
+- Column R: Type (Probe, Buffer, Sample, Load, Regeneration, Neutralization, etc.)
+- Column S: Concentration
+- Column T: Molecular Weight
+- Column U: Molar Concentration
+- Column V: Information
+
+### 3. Assay Sheet
+Contains user-defined assay loops and steps:
+- Loop column: Defines which loop each step belongs to
+- Probe column: Probe column number
+- Plate and Column: Plate number and column within plate
+- Time (Sec) and Speed (rpm): Step parameters
+- StepType: Baseline, Loading, Association, Dissociation, etc.
 
 ## Sample Types
 
 The script supports the following sample types:
-- `0`: Empty
-- `1`: Analyte
-- `2`: Background control
-- `4`: Positive control (blank) - default
-- `5`: Regenerant
-- `6`: Negative control
-- `7`: Reference
+- `0`: Empty/Blank
+- `1`: Sample/Analyte (Probe in ProbeInfo)
+- `2`: Background (Sample in ProbeInfo)
+- `4`: Buffer (default)
+- `5`: Load
+- `6`: Regeneration
+- `7`: Neutralization
 
 ## Output Format
 
@@ -104,26 +121,16 @@ The generated `.asy` file contains:
 1. **BasicInformation Section**: Contains PreExperiment and Experiment JSON configurations
 2. **PreExperiment**: Assay parameters, machine settings, shaker settings, etc.
 3. **Experiment**: 
-   - SampleInfo: Array of 96 sample definitions
-   - ProbeInfo: Array of 96 probe definitions
+   - SampleInfo: Array of 96 sample definitions (read from C14-H110)
+   - ProbeInfo: Array of 96 probe definitions (read from Q14-V110)
    - Regeneration settings (rs)
    - Flow settings (fs)
-   - listLoopStep: Assay step definitions
-
-## Troubleshooting
-
-If the script cannot find sample information or assay steps in the Excel file, it will:
-- Create empty/default entries for samples
-- Use default assay steps
-
-You can examine the Excel file structure using:
-```bash
-python examine_excel.py "GatorBio Assay Form.xlsx"
-```
+   - listLoopStep: User-defined assay step loops
 
 ## Notes
 
-- The script automatically calculates molar concentrations from concentration and molecular weight values
-- Well positions are converted from Excel format (A1-H12) to column numbers (1-96)
+- The script reads tables sequentially: row 15 maps to index 0, row 16 to index 1, etc.
+- Molar concentrations are automatically calculated if not provided (from concentration and molecular weight)
 - All concentrations are assumed to be in µg/mL, molecular weights in kDa
+- Types 6 (Regeneration) and 7 (Neutralization) automatically get SampleID set to "N/A"
 - The generated .asy file is compatible with GatorBio software version 2.17.7.0416
