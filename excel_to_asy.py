@@ -23,44 +23,12 @@ except ImportError:
 class SampleType:
     """Sample type constants from the .asy file"""
     EMPTY = 0
-    ANALYTE = 1  # Analyte samples
+    Sample = 1  # Analyte samples
     BACKGROUND = 2  # Background control
-    POSITIVE = 4  # Positive control (blank)
-    REGENERANT = 5  # Regenerant
-    NEGATIVE = 6  # Negative control
-    REFERENCE = 7  # Reference
-
-
-def parse_well_position(well_str):
-    """
-    Convert Excel well position (e.g., 'A1', 'B12') to column number (1-96).
-    A1 = 1, A2 = 2, ..., A12 = 12, B1 = 13, ..., H12 = 96
-    """
-    if not well_str or well_str == '':
-        return None
-    
-    well_str = str(well_str).strip().upper()
-    if len(well_str) < 2:
-        return None
-    
-    # Extract letter and number
-    letter = well_str[0]
-    try:
-        number = int(well_str[1:])
-    except ValueError:
-        return None
-    
-    # Convert letter to row (A=0, B=1, ..., H=7)
-    row = ord(letter) - ord('A')
-    if row < 0 or row > 7:
-        return None
-    
-    # Convert to 1-based column number (A1=1, A2=2, ..., H12=96)
-    if number < 1 or number > 12:
-        return None
-    
-    column = row * 12 + number
-    return column
+    Buffer = 4  # Positive control (blank)
+    Load = 5  # Regenerant
+    Regeneration = 6  # Negative control
+    Neutralization = 7  # Reference
 
 
 def map_sample_type_label_to_code(label):
@@ -69,34 +37,34 @@ def map_sample_type_label_to_code(label):
     Labels: Buffer, Load, Sample, Regeneration, Neutralization, Probe, Background, Negative, Reference
     """
     if not label:
-        return SampleType.POSITIVE  # Default to empty/positive control
+        return SampleType.Buffer  # Default to empty/positive control
     
     label_lower = str(label).strip().lower()
     
     if "buffer" in label_lower or "baseline" in label_lower:
-        return SampleType.POSITIVE  # 4
+        return SampleType.Buffer  # 4
     elif "load" in label_lower:
-        return SampleType.REGENERANT  # 5 - Load is typically regenerant
+        return SampleType.Load  # 5 - Load is typically regenerant
     elif "sample" in label_lower or "analyte" in label_lower:
-        return SampleType.ANALYTE  # 1
+        return SampleType.Sample  # 1
     elif "regeneration" in label_lower or "regen" in label_lower:
-        return SampleType.REGENERANT  # 5
+        return SampleType.Regeneration  # 6 - Regeneration
     elif "neutralization" in label_lower:
-        return SampleType.REGENERANT  # 5
+        return SampleType.Neutralization  # 7 - Neutralization
     elif "probe" in label_lower:
-        return SampleType.ANALYTE  # 1 - Probe is treated as analyte in ProbeInfo
+        return SampleType.Sample  # 1 - Probe is treated as analyte in ProbeInfo
     elif "background" in label_lower:
         return SampleType.BACKGROUND  # 2
     elif "negative" in label_lower:
-        return SampleType.NEGATIVE  # 6
+        return SampleType.Regeneration  # 6
     elif "reference" in label_lower:
-        return SampleType.REFERENCE  # 7
+        return SampleType.Neutralization  # 7
     else:
-        return SampleType.POSITIVE  # Default
+        return SampleType.Buffer  # Default
 
 
 def read_excel_file(excel_path):
-    """Read and parse the Excel file with multiple sheets"""
+    """Read and parse the Excel file with multiple sheets (supports .xlsx and .xlsm)"""
     wb = load_workbook(excel_path, data_only=True)
     
     # Get all sheets
@@ -172,18 +140,17 @@ def parse_pre_experiment_sheet(ws):
 def parse_plate_layout(ws):
     """
     Parse the Experiment sheet to extract sample and probe information.
-    The sheet has:
-    - Rows 2-11: Grid layout showing sample types
-    - Row 14: Header row with columns: Well, Type, Sample Name, Conc., MW, M Conc., Information
-    - Rows 15+: Detailed sample information
+    Simple sequential reading:
+    - SampleInfo: Read from C14-H110 (row 14 is header, rows 15-110 are data)
+    - ProbeInfo: Read from Q14-V110 (row 14 is header, rows 15-110 are data)
     """
     samples = []
     probe_info = []
     
-    # Create empty arrays for 96 wells
+    # Initialize arrays for 96 wells with defaults
     for i in range(96):
         samples.append({
-            "Type": SampleType.POSITIVE,  # Default to empty/positive control
+            "Type": SampleType.Buffer,
             "Concentration": -1.0,
             "MolecularWeight": -1.0,
             "MolarConcentration": -1.0,
@@ -191,130 +158,187 @@ def parse_plate_layout(ws):
             "SampleID": ""
         })
         probe_info.append({
-            "Type": SampleType.ANALYTE,  # Default probe type
+            "Type": SampleType.Sample,
             "Concentration": -1.0,
             "MolecularWeight": -1.0,
             "MolarConcentration": -1.0,
             "Information": "",
-            "SampleID": "Probe"  # Default probe ID
+            "SampleID": ""
         })
     
-    # Find the detailed sample information section (starting around row 14)
-    header_row = None
-    for row_idx, row in enumerate(ws.iter_rows(values_only=True), 1):
-        if row[1] and isinstance(row[1], str) and "96 Well Plate" in row[1] and "Type" in str(row[2]):
-            header_row = row_idx
+    # Parse SampleInfo from C14-H110 (columns C, D, E, F, G, H)
+    # Row 14 is header, rows 15-110 are data rows
+    # Columns: C=SampleID, D=Type, E=Concentration, F=MW, G=M Conc, H=Information
+    sample_idx = 0
+    for excel_row_idx in range(15, 111):  # Rows 15-110
+        if sample_idx >= 96:
             break
+        
+        row = list(ws.iter_rows(min_row=excel_row_idx, max_row=excel_row_idx, values_only=True))[0]
+        
+        # Column C (index 2): SampleID
+        sample_id_cell = row[2] if len(row) > 2 else None
+        sample_id = str(sample_id_cell).strip() if sample_id_cell else ""
+        
+        # Column D (index 3): Type
+        type_cell = row[3] if len(row) > 3 else None
+        type_str = str(type_cell).strip() if type_cell else ""
+        sample_type = map_sample_type_label_to_code(type_str)
+        
+        # For types 6 (Regeneration) and 7 (Neutralization), set SampleID to "N/A"
+        if sample_type == SampleType.Regeneration or sample_type == SampleType.Neutralization:
+            sample_id = "N/A"
+        
+        # Column E (index 4): Concentration
+        conc_cell = row[4] if len(row) > 4 else None
+        concentration = -1.0
+        if conc_cell:
+            try:
+                concentration = float(conc_cell)
+            except (ValueError, TypeError):
+                pass
+        
+        # Column F (index 5): Molecular Weight
+        mw_cell = row[5] if len(row) > 5 else None
+        molecular_weight = -1.0
+        if mw_cell:
+            try:
+                molecular_weight = float(mw_cell)
+            except (ValueError, TypeError):
+                pass
+        
+        # Column G (index 6): Molar Concentration
+        m_conc_cell = row[6] if len(row) > 6 else None
+        molar_concentration = -1.0
+        if m_conc_cell:
+            try:
+                molar_concentration = float(m_conc_cell)
+            except (ValueError, TypeError):
+                pass
+        elif concentration != -1.0 and molecular_weight != -1.0 and molecular_weight > 0:
+            # Calculate molar concentration if not provided
+            molar_concentration = (concentration / molecular_weight) * 1000  # Convert to µM
+        
+        # Column H (index 7): Information
+        info_cell = row[7] if len(row) > 7 else None
+        information = str(info_cell).strip() if info_cell else ""
+        
+        # Update SampleInfo
+        samples[sample_idx] = {
+            "Type": sample_type,
+            "Concentration": concentration,
+            "MolecularWeight": molecular_weight,
+            "MolarConcentration": molar_concentration,
+            "Information": information,
+            "SampleID": sample_id
+        }
+        
+        sample_idx += 1
     
-    if header_row:
-        # Parse detailed sample information starting from header_row + 1
-        # Columns: B=Well, C=Type/SampleID, D=Sample Name/Type, E=Conc, F=MW, G=M Conc, H=Information
-        for row_idx in range(header_row + 1, ws.max_row + 1):
-            row = list(ws.iter_rows(min_row=row_idx, max_row=row_idx, values_only=True))[0]
-            
-            # Check if this is a data row (has a well position)
-            well_cell = row[1] if len(row) > 1 else None  # Column B
-            if not well_cell:
-                continue
-            
-            well_pos = parse_well_position(str(well_cell))
-            if not well_pos:
-                continue
-            
-            well_idx = well_pos - 1  # Convert to 0-based index
-            if well_idx < 0 or well_idx >= 96:
-                continue
-            
-            # Parse sample information
-            # Column C (index 2): Could be type code or sample ID like "EPO-R"
-            type_or_id = row[2] if len(row) > 2 else None
-            
-            # Column D (index 3): Sample name/type label (Buffer, Load, Sample, etc.)
-            sample_name_type = row[3] if len(row) > 3 else None
-            
-            # Column E (index 4): Concentration
-            conc = row[4] if len(row) > 4 else None
-            
-            # Column F (index 5): Molecular Weight
-            mw = row[5] if len(row) > 5 else None
-            
-            # Column G (index 6): Molar Concentration
-            m_conc = row[6] if len(row) > 6 else None
-            
-            # Column H (index 7): Information
-            info = row[7] if len(row) > 7 else None
-            
-            # Determine sample type and ID
-            sample_type = SampleType.POSITIVE
-            sample_id = ""
-            
-            if sample_name_type:
-                # Use the sample name/type label to determine type
-                sample_type = map_sample_type_label_to_code(sample_name_type)
-                sample_id = str(sample_name_type).strip()
-            
-            # If type_or_id looks like a sample ID (e.g., "EPO-R"), use it
-            if type_or_id and isinstance(type_or_id, str) and type_or_id.strip():
-                sample_id = str(type_or_id).strip()
-            
-            # Parse concentrations
-            concentration = -1.0
-            molecular_weight = -1.0
-            molar_concentration = -1.0
-            
-            if conc:
-                try:
-                    concentration = float(conc)
-                except (ValueError, TypeError):
-                    pass
-            
-            if mw:
-                try:
-                    molecular_weight = float(mw)
-                except (ValueError, TypeError):
-                    pass
-            
-            if m_conc:
-                try:
-                    molar_concentration = float(m_conc)
-                except (ValueError, TypeError):
-                    pass
-            elif concentration != -1.0 and molecular_weight != -1.0 and molecular_weight > 0:
-                # Calculate molar concentration if not provided
-                molar_concentration = (concentration / molecular_weight) * 1000  # Convert to µM
-            
-            # Update sample info
-            samples[well_idx] = {
-                "Type": sample_type,
+    # Parse ProbeInfo from Q14-V110 (columns Q, R, S, T, U, V)
+    # Row 14 is header, rows 15-110 are data rows
+    # Columns: Q=SampleID, R=Type, S=Concentration, T=MW, U=M Conc, V=Information
+    probe_idx = 0
+    for excel_row_idx in range(15, 111):  # Rows 15-110
+        if probe_idx >= 96:
+            break
+        
+        row = list(ws.iter_rows(min_row=excel_row_idx, max_row=excel_row_idx, values_only=True))[0]
+        
+        # Column Q (index 16): SampleID
+        sample_id_cell = row[16] if len(row) > 16 else None
+        sample_id = str(sample_id_cell).strip() if sample_id_cell else ""
+        
+        # Column R (index 17): Type
+        type_cell = row[17] if len(row) > 17 else None
+        type_str = str(type_cell).strip() if type_cell else ""
+        
+        # Map type string to ProbeInfo type
+        probe_type = SampleType.EMPTY
+        if not type_str:
+            probe_type = SampleType.EMPTY  # Type 0
+            sample_id = None
+        elif "Probe" in type_str or "probe" in type_str:
+            probe_type = SampleType.Sample  # Type 1 (Probe)
+            if not sample_id or sample_id == "":
+                sample_id = "Probe"
+        elif "Buffer" in type_str or "buffer" in type_str:
+            probe_type = SampleType.Load  # Type 5 (Buffer)
+            if sample_id == "Buffer":
+                sample_id = ""
+        elif "Sample" in type_str or "sample" in type_str:
+            probe_type = SampleType.BACKGROUND  # Type 2 (Sample)
+            if sample_id == "Sample":
+                sample_id = ""
+        elif "Load" in type_str or "load" in type_str:
+            probe_type = SampleType.Load  # Type 5
+            if sample_id == "Load":
+                sample_id = ""
+        elif "Regeneration" in type_str or "Regen" in type_str or "regen" in type_str:
+            probe_type = SampleType.Regeneration  # Type 6
+            sample_id = "N/A"
+        elif "Neutralization" in type_str or "neutralization" in type_str:
+            probe_type = SampleType.Neutralization  # Type 7
+            sample_id = "N/A"
+        else:
+            probe_type = SampleType.EMPTY  # Type 0
+            sample_id = None
+        
+        # Column S (index 18): Concentration
+        conc_cell = row[18] if len(row) > 18 else None
+        concentration = -1.0
+        if conc_cell and probe_type != SampleType.EMPTY:
+            try:
+                concentration = float(conc_cell)
+            except (ValueError, TypeError):
+                pass
+        
+        # Column T (index 19): Molecular Weight
+        mw_cell = row[19] if len(row) > 19 else None
+        molecular_weight = -1.0
+        if mw_cell and probe_type != SampleType.EMPTY:
+            try:
+                molecular_weight = float(mw_cell)
+            except (ValueError, TypeError):
+                pass
+        
+        # Column U (index 20): Molar Concentration
+        m_conc_cell = row[20] if len(row) > 20 else None
+        molar_concentration = -1.0
+        if m_conc_cell and probe_type != SampleType.EMPTY:
+            try:
+                molar_concentration = float(m_conc_cell)
+            except (ValueError, TypeError):
+                pass
+        elif concentration != -1.0 and molecular_weight != -1.0 and molecular_weight > 0:
+            # Calculate molar concentration if not provided
+            molar_concentration = (concentration / molecular_weight) * 1000  # Convert to µM
+        
+        # Column V (index 21): Information
+        info_cell = row[21] if len(row) > 21 else None
+        information = str(info_cell).strip() if info_cell else ""
+        
+        # Update ProbeInfo
+        if probe_type == SampleType.EMPTY:
+            probe_info[probe_idx] = {
+                "Type": probe_type,
+                "Concentration": 0.0,
+                "MolecularWeight": 0.0,
+                "MolarConcentration": 0.0,
+                "Information": None,
+                "SampleID": sample_id
+            }
+        else:
+            probe_info[probe_idx] = {
+                "Type": probe_type,
                 "Concentration": concentration,
                 "MolecularWeight": molecular_weight,
                 "MolarConcentration": molar_concentration,
-                "Information": str(info).strip() if info else "",
-                "SampleID": sample_id
+                "Information": information,
+                "SampleID": sample_id if sample_id else ""
             }
-    
-    # Also parse the grid layout (rows 2-11) to get probe information
-    # Look for "Max Plate" which contains probe information
-    for row_idx in range(2, 12):
-        row = list(ws.iter_rows(min_row=row_idx, max_row=row_idx, values_only=True))[0]
         
-        # Find the "Max Plate" section (starts around column Q, index 16)
-        if len(row) > 16:
-            row_letter_cell = row[16]  # Column Q, should be A-H
-            if row_letter_cell and isinstance(row_letter_cell, str) and len(row_letter_cell) == 1:
-                row_letter = row_letter_cell.strip().upper()
-                if row_letter >= 'A' and row_letter <= 'H':
-                    row_num = ord(row_letter) - ord('A')
-                    
-                    # Check columns 1-12 (starting at column R, index 17)
-                    for col_num in range(1, 13):
-                        cell = row[16 + col_num] if len(row) > 16 + col_num else None
-                        if cell:
-                            cell_str = str(cell).strip()
-                            if "Probe" in cell_str:
-                                well_idx = row_num * 12 + col_num - 1
-                                if well_idx >= 0 and well_idx < 96:
-                                    probe_info[well_idx]["SampleID"] = "Probe"
+        probe_idx += 1
     
     return samples, probe_info
 
@@ -399,42 +423,61 @@ def parse_assay_sheet(ws):
                         pass
     
     # Parse assay steps
-    steps = []
-    current_loop = []
+    # Steps are now grouped by a "Loop" column (user-defined loops)
+    steps_dict = {}  # Dictionary to store steps by loop number
     in_steps_section = False
     header_found = False
+    loop_col_idx = None
     
     for row in ws.iter_rows(values_only=True):
-        if row[0] and isinstance(row[0], str):
-            if "experiment step" in str(row[0]).lower() or "step" in str(row[0]).lower():
-                if "steptype" in str(row).lower() or "steptype" in str(row).lower():
-                    header_found = True
-                    in_steps_section = True
-                    continue
+        # Check if this is the header row with "Loop" and "StepType"
+        row_str = ' '.join([str(cell).lower() if cell else '' for cell in row[:10]])
+        if "loop" in row_str and "steptype" in row_str:
+            header_found = True
+            in_steps_section = True
+            # Find the Loop column index (should be column A, index 0)
+            loop_col_idx = 0
+            continue
         
-        if in_steps_section and header_found and row[0] is not None:
-            # Parse step row: Step, Plate, Column, Sec, rpm, StepType
+        if in_steps_section and header_found and loop_col_idx is not None:
+            # Parse step row: Loop, Probe (listProbeColumn), Plate, Column, Sec, rpm, StepType
             try:
-                step_num = int(float(row[0])) if row[0] else None
-                plate = int(float(row[1])) if len(row) > 1 and row[1] else 1
-                column = int(float(row[2])) if len(row) > 2 and row[2] else 1
-                time = int(float(str(row[3]))) if len(row) > 3 and row[3] else 120
-                speed = int(float(row[4])) if len(row) > 4 and row[4] else 1000
-                step_type_str = str(row[5]).strip().lower() if len(row) > 5 and row[5] else ""
+                loop_num = int(float(row[loop_col_idx])) if len(row) > loop_col_idx and row[loop_col_idx] is not None else None
+                probe_column = int(float(row[1])) if len(row) > 1 and row[1] else 1  # Probe column (listProbeColumn)
+                plate = int(float(row[2])) if len(row) > 2 and row[2] else 1  # Plate number
+                column = int(float(row[3])) if len(row) > 3 and row[3] else 1  # Column number within plate
+                time = int(float(str(row[4]))) if len(row) > 4 and row[4] else 120  # Sec (shifted from index 3)
+                speed = int(float(row[5])) if len(row) > 5 and row[5] else 1000  # rpm (shifted from index 4)
+                step_type_str = str(row[6]).strip().lower() if len(row) > 6 and row[6] else ""  # StepType (shifted from index 5)
+                
+                # Skip if no loop number
+                if loop_num is None:
+                    continue
+                
+                # Skip regeneration step types
+                if "regen" in step_type_str or "regeneration" in step_type_str:
+                    continue
+                
+                # Calculate SampleColumn from plate and column
+                # Plate 1 uses columns 1-12, Plate 2 uses columns 13-24
+                # Formula: SampleColumn = (plate - 1) * 12 + column
+                sample_column = (plate - 1) * 12 + column
             except (ValueError, TypeError):
                 continue
             
             # Map step type string to numeric code
+            # Note: Based on reference file, "Assoc." maps to type 2 (Dissociation)
+            # and "Dissoc." maps to type 3 (Regeneration) in the loop structure
             step_type = None
             if "baseline" in step_type_str or "capture" in step_type_str:
                 step_type = 0
             elif "loading" in step_type_str or "load" in step_type_str:
                 step_type = 1  # Loading is like association
             elif "assoc" in step_type_str or "association" in step_type_str:
-                step_type = 1
-            elif "dissoc" in step_type_str or "dissociation" in step_type_str:
+                # In the reference file, "Assoc." steps after baseline are treated as Dissociation (type=2)
                 step_type = 2
-            elif "regen" in step_type_str or "regeneration" in step_type_str:
+            elif "dissoc" in step_type_str or "dissociation" in step_type_str:
+                # In the reference file, "Dissoc." steps are treated as Regeneration (type=3)
                 step_type = 3
             else:
                 continue  # Skip unknown step types
@@ -444,22 +487,17 @@ def parse_assay_sheet(ws):
                 "type": step_type,
                 "isMultiStep": False,
                 "isSubElementExist": False,
-                "listProbeColumn": [plate],  # Use plate number as probe column
-                "listStep": [{"SampleColumn": column, "Speed": speed, "Time": time}]
+                "listProbeColumn": [probe_column],  # Use Probe column from Excel
+                "listStep": [{"SampleColumn": sample_column, "Speed": speed, "Time": time}]
             }
             
-            # Determine if this starts a new loop
-            # A new loop typically starts with Baseline/Capture steps
-            if step_type == 0 and current_loop:
-                # Save previous loop and start new one
-                steps.append(current_loop)
-                current_loop = [step]
-            else:
-                current_loop.append(step)
+            # Group steps by loop number (user-defined loops)
+            if loop_num not in steps_dict:
+                steps_dict[loop_num] = []
+            steps_dict[loop_num].append(step)
     
-    # Add final loop
-    if current_loop:
-        steps.append(current_loop)
+    # Convert dictionary to list of loops, sorted by loop number
+    steps = [steps_dict[loop_num] for loop_num in sorted(steps_dict.keys())]
     
     return rs, fs, steps if steps else None
 
@@ -626,6 +664,7 @@ def generate_asy_file(excel_path, output_path=None):
         rs, fs, assay_steps = parse_assay_sheet(sheets["Assay"])
         if assay_steps:
             print(f"Found {len(assay_steps)} assay loop(s) with {sum(len(loop) for loop in assay_steps)} total steps")
+            
         else:
             print("No assay steps found in Assay sheet, using defaults")
     else:
