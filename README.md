@@ -8,6 +8,7 @@ This Python program converts a GatorBio Assay Form Excel file (`.xlsx` or `.xlsm
 - **Sample Information**: Extracts sample IDs, types, concentrations, and molecular weights
 - **Probe Information**: Extracts probe information for Max Plate configuration
 - **Assay Steps Configuration**: Parses user-defined assay loops and steps
+- **Liquid Handler Notebook**: Builds a pylabrobot Jupyter notebook for automated dilutions
 - **GUI Support**: Interactive file selection dialogs
 - **Complete Configuration**: Generates all required parameters for the GatorBio BLI machine
 
@@ -49,17 +50,23 @@ This will:
 
 ```bash
 python excel_to_asy.py "GatorBio Assay Form.xlsm" -o "output.asy"
+python excel_to_asy.py "GatorBio Assay Form.xlsm" --notebook -o "output.ipynb"
 ```
 
 ### Command Line Arguments
 
 - `excel_file`: (Required) Path to the Excel file (.xlsx or .xlsm)
-- `-o, --output`: Output .asy file path (default: same name as Excel file)
+- `-o, --output`: Output file path (default: same name as Excel file)
+- `--notebook, -n`: Generate a pylabrobot notebook instead of a `.asy` file
 
 ### Example
 
 ```bash
+# Generate an ASY file
 python excel_to_asy.py "GatorBio Assay Form.xlsm" -o "MyAssay.asy"
+
+# Generate a liquid handler notebook
+python excel_to_asy.py "GatorBio Assay Form.xlsm" --notebook -o "MyAssay_liquid_handler.ipynb"
 ```
 
 ## Excel File Format
