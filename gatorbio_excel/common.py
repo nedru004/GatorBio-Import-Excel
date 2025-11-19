@@ -67,6 +67,7 @@ _MAX_LABEL_MAP = {
     "activation": SampleType.MaxPlate.Activation,
     "quench": SampleType.MaxPlate.Quench,
     "wash": SampleType.MaxPlate.Wash,
+    "0": SampleType.MaxPlate.EMPTY,
 }
 
 

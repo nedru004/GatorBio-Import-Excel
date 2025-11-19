@@ -1,6 +1,7 @@
-# GatorBio Excel to ASY Converter
-
+# GatorBio Excel to ASY Converter and pylabrobot liquid handling
+![GatorBio Excel Import Overview](gatorbio-import-excel.jpg)
 This Python program converts a GatorBio Assay Form Excel file (`.xlsx` or `.xlsm`) into a `.asy` file that can be imported into the GatorBio BLI machine software.
+
 
 ## Features
 
@@ -70,7 +71,7 @@ python excel_to_asy.py "GatorBio Assay Form.xlsm" --notebook -o "MyAssay_liquid_
 ```
 
 ## Excel File Format
-
+![Excel Assay Form Screenshot](excel_screenshot.png)
 The script expects an Excel file with three sheets:
 
 ### 1. PreExperiment Sheet
@@ -112,14 +113,30 @@ Contains user-defined assay loops and steps:
 
 ## Sample Types
 
-The script supports the following sample types:
-- `0`: Empty/Blank
-- `1`: Sample/Analyte (Probe in ProbeInfo)
-- `2`: Background (Sample in ProbeInfo)
-- `4`: Buffer (default)
-- `5`: Load
+The Excel parser now applies different numeric codes depending on which plate a well belongs to.
+
+### Assay Plate (96‑well SampleInfo)
+- `0`: Empty
+- `1`: Sample / Analyte
+- `4`: Buffer (wash or baseline)
+- `5`: Load (ligand)
 - `6`: Regeneration
 - `7`: Neutralization
+- `8`: Activation
+- `9`: Quench
+- `10`: Wash
+
+### Max Plate (ProbeInfo)
+- `0`: Empty
+- `1`: Probe sensor
+- `2`: Sample / Analyte
+- `5`: Buffer (wash or baseline)
+- `6`: Load (ligand)
+- `7`: Regeneration
+- `8`: Neutralization
+- `9`: Activation
+- `10`: Quench
+- `11`: Wash
 
 ## Output Format
 

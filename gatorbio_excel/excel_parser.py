@@ -141,7 +141,7 @@ def parse_plate_layout(ws) -> Tuple[List[Dict[str, object]], List[Dict[str, obje
         sample_id = str(sample_id_cell).strip() if sample_id_cell else ""
 
         type_cell = row[3] if len(row) > 3 else None
-        type_str = str(type_cell).strip() if type_cell else ""
+        type_str = str(type_cell).strip() if type_cell is not None else ""
         sample_type = map_assay_label_to_code(type_str)
 
         if sample_type in (SampleType.Assay.Regeneration, SampleType.Assay.Neutralization):
@@ -176,6 +176,19 @@ def parse_plate_layout(ws) -> Tuple[List[Dict[str, object]], List[Dict[str, obje
         info_cell = row[7] if len(row) > 7 else None
         information = str(info_cell).strip() if info_cell else ""
 
+        sample_id_lower = sample_id.strip().lower()
+        if (
+            sample_type == SampleType.Assay.Sample
+            and (not sample_id_lower or sample_id_lower in {"sample", "probe"})
+            and (
+                concentration in (-1.0, 0.0)
+                or concentration is None
+                or concentration in {"", "N/A"}
+                or (isinstance(concentration, (int, float)) and concentration <= 0)
+            )
+        ):
+            sample_type = SampleType.Assay.Buffer
+            sample_id = ""
         samples[sample_idx] = {
             "Type": sample_type,
             "Concentration": concentration,
@@ -201,7 +214,7 @@ def parse_plate_layout(ws) -> Tuple[List[Dict[str, object]], List[Dict[str, obje
         sample_id = str(sample_id_cell).strip() if sample_id_cell else ""
 
         type_cell = row[17] if len(row) > 17 else None
-        type_str = str(type_cell).strip() if type_cell else ""
+        type_str = str(type_cell).strip() if type_cell is not None else ""
 
         probe_type = map_max_plate_label_to_code(type_str)
         if probe_type == SampleType.MaxPlate.Probe and not sample_id:
@@ -242,6 +255,19 @@ def parse_plate_layout(ws) -> Tuple[List[Dict[str, object]], List[Dict[str, obje
         info_cell = row[21] if len(row) > 21 else None
         information = str(info_cell).strip() if info_cell else ""
 
+        sample_id_lower = sample_id.strip().lower()
+        if (
+            probe_type == SampleType.MaxPlate.Sample
+            and (not sample_id_lower or sample_id_lower in {"sample", "probe"})
+            and (
+                concentration in (-1.0, 0.0)
+                or concentration is None
+                or concentration in {"", "N/A"}
+                or (isinstance(concentration, (int, float)) and concentration <= 0)
+            )
+        ):
+            probe_type = SampleType.MaxPlate.Buffer
+            sample_id = ""
         if probe_type == SampleType.MaxPlate.EMPTY:
             probe_info[probe_idx] = {
                 "Type": probe_type,

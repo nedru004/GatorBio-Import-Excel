@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Optional, List, Tuple
-from math import ceil, isclose
+from typing import Dict, List, Tuple
+from math import ceil
 from datetime import datetime
 
 from .common import SampleType, sanitize_identifier
@@ -14,7 +14,6 @@ from .excel_parser import parse_plate_layout, read_excel_file
 def generate_liquid_handler_notebook(
     excel_path: Path | str,
     output_path: Path | str | None = None,
-    initial_concentrations: Optional[Dict[str, float]] = None,
 ) -> Path:
     """Generate a Jupyter notebook for liquid handling using pylabrobot."""
 
@@ -28,10 +27,9 @@ def generate_liquid_handler_notebook(
     if "Experiment" not in sheets:
         raise ValueError("Experiment sheet not found in Excel file")
 
-    samples, probe_info = parse_plate_layout(sheets["Experiment"])
+    assay_plate, max_plate = parse_plate_layout(sheets["Experiment"])
 
-    if initial_concentrations is None:
-        initial_concentrations = {}
+    initial_concentrations: Dict[str, float] = {}
 
     ASSAY_DILUTION_VOLUME_UL = 300
     MAX_DILUTION_VOLUME_UL = 300
@@ -59,21 +57,17 @@ def generate_liquid_handler_notebook(
         SampleType.MaxPlate.Wash: "stock_buffer",
     }
 
-    combined_liquids: Dict[str, dict] = {}
+    combined_samples: Dict[str, dict] = {}
 
     def register_entry(entry, well_idx, plate_kind):
         sample_id = str(entry.get("SampleID") or "").strip()
         concentration = entry.get("Concentration", -1.0)
-        sample_type = entry.get("Type", SampleType.Assay.Buffer if plate_kind == "assay" else SampleType.MaxPlate.Buffer)
-
-        shared_map = ASSAY_SHARED_RESOURCE_MAP if plate_kind == "assay" else MAX_SHARED_RESOURCE_MAP
-        if sample_type in shared_map:
-            return
+        sample_type = entry.get("Type", None)
 
         if not sample_id or sample_id.upper() == "N/A":
             return
 
-        record = combined_liquids.setdefault(
+        record = combined_samples.setdefault(
             sample_id,
             {
                 "occurrences": [],
@@ -102,13 +96,13 @@ def generate_liquid_handler_notebook(
         if concentration is not None and concentration > 0:
             record["max_conc"] = max(record["max_conc"], concentration)
 
-    for well_idx, sample in enumerate(samples):
+    for well_idx, sample in enumerate(assay_plate):
         register_entry(sample, well_idx, "assay")
 
-    for well_idx, probe in enumerate(probe_info):
-        register_entry(probe, well_idx, "max")
+    for well_idx, entry in enumerate(max_plate):
+        register_entry(entry, well_idx, "max")
 
-    for sample_id, record in combined_liquids.items():
+    for sample_id, record in combined_samples.items():
         buckets = {}
         for occ in record["occurrences"]:
             conc = occ.get("concentration", -1.0)
@@ -137,9 +131,9 @@ def generate_liquid_handler_notebook(
         if record["max_conc"] <= 0:
             record["max_conc"] = 1.0
 
-    combined_sample_ids = sorted(combined_liquids.keys())
-    assay_ids = [sid for sid in combined_sample_ids if combined_liquids[sid]["has_assay"]]
-    max_ids = [sid for sid in combined_sample_ids if combined_liquids[sid]["has_max"]]
+    combined_sample_ids = sorted(combined_samples.keys())
+    assay_ids = [sid for sid in combined_sample_ids if combined_samples[sid]["has_assay"]]
+    max_ids = [sid for sid in combined_sample_ids if combined_samples[sid]["has_max"]]
 
     row_usage = [1] * 8  # next available column per row (1-indexed)
     max_column_used = 1
@@ -148,7 +142,7 @@ def generate_liquid_handler_notebook(
     current_row_pointer = 0
 
     for sample_id in combined_sample_ids:
-        record = combined_liquids[sample_id]
+        record = combined_samples[sample_id]
         total_occurrences = len(record["occurrences"])
         wells_needed = max(total_occurrences, 1)
 
@@ -194,7 +188,7 @@ def generate_liquid_handler_notebook(
 
     init_conc_vars = []
     for sample_id in assay_ids:
-        record = combined_liquids[sample_id]
+        record = combined_samples[sample_id]
         safe_name = sanitize_identifier(sample_id, prefix="S")
         var_name = safe_name.upper()
         default_conc = initial_concentrations.get(sample_id, record["max_conc"])
@@ -206,7 +200,7 @@ def generate_liquid_handler_notebook(
 
     init_max_conc_vars = []
     for sample_id in max_ids:
-        record = combined_liquids[sample_id]
+        record = combined_samples[sample_id]
         safe_name = sanitize_identifier(sample_id, prefix="P")
         var_name = f"MAX_{safe_name.upper()}"
         default_conc = record["max_conc"]
@@ -232,22 +226,22 @@ def generate_liquid_handler_notebook(
         return (column_number, ord(row_letter))
 
     assay_shared_wells = defaultdict(list)
-    for idx, sample in enumerate(samples):
-        sample_type = sample.get("Type", SampleType.Assay.EMPTY)
-        resource = ASSAY_SHARED_RESOURCE_MAP.get(sample_type)
+    for idx, entry in enumerate(assay_plate):
+        entry_type = entry.get("Type", SampleType.Assay.EMPTY)
+        resource = ASSAY_SHARED_RESOURCE_MAP.get(entry_type)
         if resource:
-            well_position = sample.get("WellPosition")
+            well_position = entry.get("WellPosition")
             if not well_position:
                 raise ValueError(f"Missing WellPosition for assay sample index {idx}")
             assay_shared_wells[resource].append(well_position)
             resource_volume_uL[resource] += ASSAY_FINAL_VOLUME_UL
 
     max_shared_wells = defaultdict(list)
-    for idx, probe in enumerate(probe_info):
-        probe_type = probe.get("Type", SampleType.MaxPlate.EMPTY)
-        resource = MAX_SHARED_RESOURCE_MAP.get(probe_type)
+    for idx, entry in enumerate(max_plate):
+        entry_type = entry.get("Type", SampleType.MaxPlate.EMPTY)
+        resource = MAX_SHARED_RESOURCE_MAP.get(entry_type)
         if resource:
-            well_position = probe.get("WellPosition")
+            well_position = entry.get("WellPosition")
             if not well_position:
                 raise ValueError(f"Missing WellPosition for Max Plate index {idx}")
             max_shared_wells[resource].append(well_position)
@@ -327,17 +321,16 @@ def generate_liquid_handler_notebook(
         "MAX_PLATE_FINAL_VOLUME = 200  # µL transferred to Max Plate\n",
         "MAX_PLATE_DILUTION_VOLUME = 300  # µL per dilution in Max Plate deep well\n",
         "\n",
-        "# Mixing and flow parameters\n",
-        "MIX_CYCLES = 3\n",
-        "FLOW_RATE = 100  # µL/sec\n",
-        "CHANGE_TIPS_BETWEEN_DILUTIONS = True\n",
+        "# Carrier Rail Assignment\n",
+        "PLATE_CARRIER_RAIL = 19\n",
+        "TUBE_CARRIER_RAIL = 35\n",
+        "TIP_CARRIER_RAIL = 7\n",
         "\n",
-        "# Assay initial stock concentrations (µg/mL)\n",
-    ] + (init_conc_vars if init_conc_vars else ["# None detected\n"])
-
-    variables_code += ["\n", "# Max Plate initial stock concentrations (µg/mL)\n"] + (
-        init_max_conc_vars if init_max_conc_vars else ["# None detected\n"]
-    )
+        "# Mixing parameters\n",
+        "MIX_CYCLES = 4\n",
+        "CHANGE_TIPS_BETWEEN_DILUTIONS = False\n",
+        "\n",
+    ]
 
     notebook["cells"].append(
         {
@@ -385,9 +378,10 @@ def generate_liquid_handler_notebook(
         "# Tips\n",
         'tip_car = TIP_CAR_480_A00(name="tip_carrier")\n',
         'tip_car[0] = hamilton_96_tiprack_1000uL(name="main_tips")\n',
-        "lh.deck.assign_child_resource(tip_car, rails=7)\n",
+        'tip_car[1] = hamilton_96_tiprack_1000uL(name="spare_tips")\n',
+        "lh.deck.assign_child_resource(tip_car, rails=TIP_CARRIER_RAIL)\n",
         "\n",
-        "TIP_POSITIONS = [\n",
+        "TIP_WELL_ORDER = [\n",
         "    'A1', 'B1', 'C1', 'D1', 'E1', 'F1', 'G1', 'H1',\n",
         "    'A2', 'B2', 'C2', 'D2', 'E2', 'F2', 'G2', 'H2',\n",
         "    'A3', 'B3', 'C3', 'D3', 'E3', 'F3', 'G3', 'H3',\n",
@@ -401,17 +395,18 @@ def generate_liquid_handler_notebook(
         "    'A11', 'B11', 'C11', 'D11', 'E11', 'F11', 'G11', 'H11',\n",
         "    'A12', 'B12', 'C12', 'D12', 'E12', 'F12', 'G12', 'H12',\n",
         "]\n",
+        "TIP_POSITIONS = [(\"main_tips\", pos) for pos in TIP_WELL_ORDER] + [(\"spare_tips\", pos) for pos in TIP_WELL_ORDER]\n",
         "tip_position_index = 0\n",
         "\n",
         "# Plates\n",
         f"dilution_plate_names = {dilution_plate_names_repr}\n",
         'plt_car = PLT_CAR_L5AC_A00(name="plate_carrier")\n',
         'plt_car[0] = Cor_96_wellplate_360ul_Fb(name="final_plate")  # Assay plate\n',
-        'plt_car[1] = nest_96_wellplate_2mL_Vb(name=dilution_plate_names[0])  # Shared dilutions\n',
-        'plt_car[2] = Cor_96_wellplate_360ul_Fb(name="max_plate_final")  # Max Plate\n',
+        'plt_car[1] = Cor_96_wellplate_360ul_Fb(name="max_plate_final")  # Max Plate\n',
+        'plt_car[2] = nest_96_wellplate_2mL_Vb(name=dilution_plate_names[0])  # Shared dilutions\n',
         "if len(dilution_plate_names) > 1:\n",
         '    plt_car[3] = nest_96_wellplate_2mL_Vb(name=dilution_plate_names[1])  # Additional dilutions\n',
-        "lh.deck.assign_child_resource(plt_car, rails=1)\n",
+        "lh.deck.assign_child_resource(plt_car, rails=PLATE_CARRIER_RAIL)\n",
         "\n",
         "# 50 mL stock tubes\n",
         f"stock_resources = {tube_resources}\n",
@@ -421,7 +416,7 @@ def generate_liquid_handler_notebook(
         '        print(f"Warning: Not enough tube positions for {resource_name}")\n',
         "        continue\n",
         "    tube_car[11 - i] = Cor_Falcon_tube_50mL_Vb(name=resource_name)\n",
-        "lh.deck.assign_child_resource(tube_car, rails=35)\n",
+        "lh.deck.assign_child_resource(tube_car, rails=TUBE_CARRIER_RAIL)\n",
         "\n",
         "lh.summary()",
     ]
@@ -450,10 +445,10 @@ def generate_liquid_handler_notebook(
         "        raise RuntimeError('Not enough tips available for this run.')\n",
         "    positions = TIP_POSITIONS[tip_position_index:tip_position_index + count]\n",
         "    tip_position_index += count\n",
-        "    return positions\n",
-        "\n",
-        "def get_tip_resources(positions):\n",
-        "    return [lh.deck.get_resource('main_tips')[pos] for pos in positions]\n",
+        "    resources = []\n",
+        "    for rack_name, position in positions:\n",
+        "        resources.append(lh.deck.get_resource(rack_name)[position][0])\n",
+        "    return resources\n",
         "\n",
         "def group_wells_by_column(wells):\n",
         "    columns = {}\n",
@@ -464,114 +459,111 @@ def generate_liquid_handler_notebook(
         "        columns[column].sort()\n",
         "    return columns\n",
         "\n",
-        "async def serial_dilution(source_plate_name, target_plate_name, source_well, target_well, transfer_volume, final_volume, mix_cycles=MIX_CYCLES):\n",
-        '    """Transfer an aliquot from source to target and mix for serial dilution."""\n',
-        "    source_plate = lh.deck.get_resource(source_plate_name)\n",
-        "    target_plate = lh.deck.get_resource(target_plate_name)\n",
-        '    tip_positions = next_tip_positions(1)\n',
-        "    tips = get_tip_resources(tip_positions)\n",
-        "    await lh.pick_up_tips(tips)\n",
-        "    await lh.aspirate([source_plate[source_well]], vols=[transfer_volume], flow_rates=[FLOW_RATE])\n",
-        "    await lh.dispense([target_plate[target_well]], vols=[transfer_volume], flow_rates=[FLOW_RATE])\n",
-        "    for _ in range(mix_cycles):\n",
-        "        mix_volume = min(final_volume * 0.8, final_volume)\n",
-        "        await lh.aspirate([target_plate[target_well]], vols=[mix_volume], flow_rates=[FLOW_RATE])\n",
-        "        await lh.dispense([target_plate[target_well]], vols=[mix_volume], flow_rates=[FLOW_RATE], offsets=[Coordinate(0, 0, 5)])\n",
-        "    await lh.drop_tips([lh.deck.get_resource('trash')]*len(tips))\n",
-        "\n",
-        "async def transfer_from_tube_to_plate(tube_resource_name, plate_name, target_well, volume):\n",
-        '    """Transfer liquid from a 50 mL tube to a plate well"""\n',
-        '    tube_resource = lh.deck.get_resource(tube_resource_name)\n',
-        "    plate = lh.deck.get_resource(plate_name)\n",
-        "    tip_positions = next_tip_positions(1)\n",
-        "    tips = get_tip_resources(tip_positions)\n",
-        "    await lh.pick_up_tips(tips)\n",
-        "    await lh.aspirate([tube_resource], vols=[volume], flow_rates=[FLOW_RATE])\n",
-        "    await lh.dispense([plate[target_well]], vols=[volume], flow_rates=[FLOW_RATE])\n",
-        "    await lh.drop_tips([lh.deck.get_resource('trash')]*len(tips))\n",
-        "\n",
-        "async def load_plate_columns_from_stock(stock_resource_name, plate_name, wells, volume_per_well):\n",
-        "    if not wells:\n",
-        "        return\n",
-        "    wells_by_column = group_wells_by_column(wells)\n",
-        "    for column in sorted(wells_by_column.keys(), key=lambda c: int(c)):\n",
-        "        column_wells = wells_by_column[column]\n",
-        "        if len(column_wells) == 8:\n",
-        "            volumes = [volume_per_well] * 8\n",
-        "            await multi_channel_transfer_from_tube(stock_resource_name, plate_name, int(column), volumes)\n",
-        "        else:\n",
-        "            for well in column_wells:\n",
-        "                await transfer_from_tube_to_plate(stock_resource_name, plate_name, well, volume_per_well)\n",
-        "\n",
-        "def build_channel_indices(volumes):\n",
-        "    return [idx for idx, vol in enumerate(volumes) if vol and vol > 0]\n",
-        "\n",
-        "async def multi_channel_transfer_from_tube(tube_resource_name, plate_name, column_number, volumes, change_tips=True):\n",
-        "    channel_indices = build_channel_indices(volumes)\n",
-        "    if not channel_indices:\n",
-        "        return\n",
+        "async def multi_channel_transfer_from_tube(tube_resource_name, plate_name, column_transfers, keep_tips=False):\n",
+        "    # column_transfers: List[[column_number, volume_list_8]]\n",
         "    tube = lh.deck.get_resource(tube_resource_name)\n",
         "    plate = lh.deck.get_resource(plate_name)\n",
-        "    tip_positions = next_tip_positions(len(channel_indices))\n",
-        "    tip_resources = get_tip_resources(tip_positions)\n",
-        "    await lh.pick_up_tips(tip_resources)\n",
-        "    source_containers = [tube for _ in channel_indices]\n",
-        "    volumes_list = [volumes[idx] for idx in channel_indices]\n",
-        "    await lh.aspirate(source_containers, vols=volumes_list, use_channels=channel_indices, flow_rates=[FLOW_RATE] * len(channel_indices))\n",
-        "    target_positions = [f\"{chr(ord('A') + idx)}{column_number}\" for idx in channel_indices]\n",
-        "    targets = [plate[pos] for pos in target_positions]\n",
-        "    await lh.dispense(targets, vols=volumes_list, use_channels=channel_indices, flow_rates=[FLOW_RATE] * len(channel_indices))\n",
-        "    await lh.drop_tips([lh.deck.get_resource('trash')]*len(channel_indices))\n",
+        "    MAX_TIP_VOLUME = 1000\n",
+        "    channel_set = set()\n",
+        "    per_channel_total = [0]*8\n",
+        "    for column_number, volumes in column_transfers:\n",
+        "        channel_indices = [idx for idx, vol in enumerate(volumes) if vol and vol > 0]\n",
+        "        channel_set.update(channel_indices)\n",
+        "        for idx in channel_indices:\n",
+        "            per_channel_total[idx] += volumes[idx]\n",
+        "    # Check tip presence from machine\n",
+        "    tip_presence = await lh.backend.request_tip_presence()\n",
+        "    channels_with_tips = [i for i, has_tip in enumerate(tip_presence) if has_tip == 1]\n",
+        "    # Check if we need to discard tips (if required channels don't match existing tips)\n",
+        "    if not set(channel_set).issubset(set(channels_with_tips)) and not keep_tips:\n",
+        "        await lh.discard_tips()\n",
+        "        tip_resources = next_tip_positions(len(channel_set))\n",
+        "        await lh.pick_up_tips(tip_resources, use_channels=list(channel_set))\n",
+        "    print(f'[DEBUG] multi_channel_transfer_from_tube: channels={channel_set}')\n",
+        "    print(f'[DEBUG] Total volumes to aspirate per channel (row_idx -> volume): {per_channel_total}')\n",
+        "    for idx, total in enumerate(per_channel_total):\n",
+        "        if total > MAX_TIP_VOLUME:\n",
+        "            raise ValueError(f'Requested volume {total} µL exceeds 1000 µL limit for tip channel {idx}.')\n",
+        "    for idx in channel_set:\n",
+        "        print(f'[DEBUG] Aspirating {per_channel_total[idx]:.1f} µL into channel {idx}')\n",
+        "        await lh.aspirate(\n",
+        "            [tube],\n",
+        "            vols=[per_channel_total[idx]],\n",
+        "            use_channels=[idx],\n",
+        "        )\n",
+        "    # Check volume in tips after aspiration\n",
+        "    print('[DEBUG] Checking volume in tips after aspiration:')\n",
+        "    for channel in channel_set:\n",
+        "        vol_in_tip = await lh.backend.request_volume_in_tip(channel)\n",
+        "        expected_vol = per_channel_total[channel]\n",
+        "        print(f'  Channel {channel}: {vol_in_tip:.1f} µL (expected: {expected_vol:.1f} µL)')\n",
+        "    for column_number, volumes in column_transfers:\n",
+        "        channels_to_use = []\n",
+        "        volumes_filtered = []\n",
+        "        for idx, volume in enumerate(volumes):\n",
+        "            if volume and volume > 0:\n",
+        "                channels_to_use.append(idx)\n",
+        "                volumes_filtered.append(volume)\n",
+        "        target_positions = [f\"{chr(ord('A') + channel)}{column_number}\" for channel in channels_to_use]\n",
+        "        targets_all = [plate[pos][0] for pos in target_positions]\n",
+        "        await lh.dispense(\n",
+        "            targets_all,\n",
+        "            vols=volumes_filtered,\n",
+        "            use_channels= channels_to_use,\n",
+        "            offsets=[Coordinate(0, 0, 5)] * len(channels_to_use),\n",
+        "        )\n",
         "\n",
-        "async def multi_channel_serial_dilution(source_plate_name, target_plate_name, source_column, target_column, transfer_volumes, total_volumes, sample_labels, change_tips, reuse_state):\n",
-        "    channel_indices = build_channel_indices(transfer_volumes)\n",
-        "    if not channel_indices:\n",
-        "        return\n",
+        "async def multi_channel_serial_dilution(source_plate_name, target_plate_name, source_column, target_column, transfer_volumes, keep_tips=False):\n",
+        "    channel_indices = [idx for idx, vol in enumerate(transfer_volumes) if vol and vol > 0]\n",
         "    source_plate = lh.deck.get_resource(source_plate_name)\n",
         "    target_plate = lh.deck.get_resource(target_plate_name)\n",
         "    source_positions = [f\"{chr(ord('A') + idx)}{source_column}\" for idx in channel_indices]\n",
         "    target_positions = [f\"{chr(ord('A') + idx)}{target_column}\" for idx in channel_indices]\n",
-        "    if change_tips or not reuse_state.get('loaded'):\n",
-        "        tip_positions = next_tip_positions(len(channel_indices))\n",
-        "        tip_resources = get_tip_resources(tip_positions)\n",
-        "        await lh.pick_up_tips(tip_resources)\n",
-        "        reuse_state['loaded'] = True\n",
-        "        reuse_state['tip_resources'] = tip_resources\n",
-        "    else:\n",
-        "        tip_resources = reuse_state['tip_resources']\n",
-        "    source_containers = [source_plate[pos] for pos in source_positions]\n",
+        "    # Check tip presence from machine\n",
+        "    tip_presence = await lh.backend.request_tip_presence()\n",
+        "    channels_with_tips = [i for i, has_tip in enumerate(tip_presence) if has_tip == 1]\n",
+        "    # Check if we need to discard tips (if required channels don't match existing tips)\n",
+        "    if not set(channel_indices).issubset(set(channels_with_tips)) and not keep_tips:\n",
+        "        await lh.discard_tips()\n",
+        "        tip_resources = next_tip_positions(len(channel_indices))\n",
+        "        await lh.pick_up_tips(tip_resources, use_channels=list(channel_indices))\n",
+        "    source_containers = [source_plate[pos][0] for pos in source_positions]\n",
         "    transfer_list = [transfer_volumes[idx] for idx in channel_indices]\n",
-        "    await lh.aspirate(source_containers, vols=transfer_list, use_channels=channel_indices, flow_rates=[FLOW_RATE] * len(channel_indices))\n",
-        "    target_containers = [target_plate[pos] for pos in target_positions]\n",
+        "    await lh.aspirate(source_containers, vols=transfer_list, use_channels=channel_indices)\n",
+        "    target_containers = [target_plate[pos][0] for pos in target_positions]\n",
         "    mix_args = None\n",
         "    if MIX_CYCLES and MIX_CYCLES > 0:\n",
-        "        mix_args = []\n",
-        "        for idx, channel_idx in enumerate(channel_indices):\n",
-        "            channel_total = total_volumes[channel_idx] or transfer_list[idx]\n",
-        "            mix_volume = channel_total * 0.8 if channel_total else transfer_list[idx]\n",
-        "            mix_args.append(Mix(volume=mix_volume, repetitions=MIX_CYCLES, flow_rate=FLOW_RATE))\n",
-        "    await lh.dispense(target_containers, vols=transfer_list, use_channels=channel_indices, flow_rates=[FLOW_RATE] * len(channel_indices), mix=mix_args)\n",
-        "    for idx, channel_idx in enumerate(channel_indices):\n",
-        "        label = sample_labels[channel_idx]\n",
-        "        if label:\n",
-        "            print(f\"{label}: column {source_column}->{target_column} dilution complete\")\n",
-        "    if change_tips:\n",
-        "        await lh.drop_tips([lh.deck.get_resource('trash')]*len(channel_indices))\n",
-        "        reuse_state['loaded'] = False\n",
-        "        reuse_state['tip_resources'] = []\n",
-        "    else:\n",
-        "        reuse_state['tip_resources'] = tip_resources\n",
+        "        mix_args = [Mix(volume=transfer_volumes[idx], repetitions=MIX_CYCLES) for idx in channel_indices]\n",
+        "    await lh.dispense(target_containers, vols=transfer_list, use_channels=channel_indices, mix=mix_args)\n",
         "\n",
-        "async def transfer_to_final_plate(source_plate_name, target_plate_name, source_well, target_well, volume):\n",
+        "async def transfer_to_final_plate(target_plate_name, entries, volume):\n",
         '    """Transfer liquid from source plate to target plate"""\n',
-        "    source_plate = lh.deck.get_resource(source_plate_name)\n",
+        "    ordered = sorted(entries)\n",
+        "    if not ordered:\n",
+        "        return\n",
         "    target_plate = lh.deck.get_resource(target_plate_name)\n",
-        "    tip_positions = next_tip_positions(1)\n",
-        "    tips = get_tip_resources(tip_positions)\n",
+        "    source_containers = [lh.deck.get_resource(source_plate_name)[source_well][0] for source_plate_name, source_well, _ in ordered]\n",
+        "    target_containers = [target_plate[target_well][0] for _, _, target_well in ordered]\n",
+        "    tips = next_tip_positions(len(ordered))\n",
         "    await lh.pick_up_tips(tips)\n",
-        "    await lh.aspirate([source_plate[source_well]], vols=[volume], flow_rates=[FLOW_RATE])\n",
-        "    await lh.dispense([target_plate[target_well]], vols=[volume], flow_rates=[FLOW_RATE])\n",
-        "    await lh.drop_tips([lh.deck.get_resource('trash')]*len(tips))\n",
+        "    if len(set([x[1] for x in ordered])) != len(ordered):\n",
+        "        for i, source_well in enumerate(source_containers):\n",
+        "            await lh.aspirate([source_well], vols=[volume], use_channels=[i], blow_out_air_volume=[10])\n",
+        "    else:\n",
+        "        await lh.aspirate(\n",
+        "            source_containers,\n",
+        "            vols=[volume] * len(ordered),\n",
+        "            use_channels=list(range(len(ordered))),\n",
+        "            blow_out_air_volume=[10] * len(ordered),\n",
+        "        )\n",
+        "    await lh.dispense(\n",
+        "        target_containers,\n",
+        "        vols=[volume] * len(ordered),\n",
+        "        use_channels=list(range(len(ordered))),\n",
+        "        blow_out_air_volume=[15] * len(ordered),\n",
+        "        offsets=[Coordinate(0, 0, 5)] * len(ordered),\n",
+        "    )\n",
+        "    await lh.discard_tips()\n",
     ]
 
     notebook["cells"].append(
@@ -591,19 +583,8 @@ def generate_liquid_handler_notebook(
         }
     )
 
-    has_assay_liquids = bool(assay_ids)
-    has_max_liquids = bool(max_ids)
 
     main_code = ['print("Starting liquid handling...")\n']
-    if has_assay_liquids:
-        main_code.append('print("Preparing assay plate dilutions...")\n')
-    else:
-        main_code.append("# No assay plate dilutions detected\n")
-
-    if has_max_liquids:
-        main_code.append('\nprint("Preparing Max Plate dilutions...")\n')
-    else:
-        main_code.append("\n# No Max Plate liquids detected\n")
 
     main_code.append("\n")
 
@@ -730,8 +711,13 @@ def generate_liquid_handler_notebook(
             if offset_increment == 0:
                 load_volume = base_total * len(plan) if use_single_well else base_total
                 if stock_resource:
+                    column_number = int(target_well[1:])
+                    row_index = ord(target_well[0]) - ord("A")
+                    volumes = [0.0] * 8
+                    volumes[row_index] = round(load_volume, 1)
+                    transfers_json = json.dumps([[column_number, volumes]])
                     sample_prefill_commands.append(
-                        f"await transfer_from_tube_to_plate('{stock_resource}', '{plate_resource_name}', '{target_well}', {load_volume:.1f})\n"
+                        f"await multi_channel_transfer_from_tube('{stock_resource}', '{plate_resource_name}', {transfers_json})\n"
                     )
                     message = f"Loaded {sample_id} {liquid_desc} into {target_well} ({load_volume:.1f} µL)"
                     if transfer_out > 0 and not use_single_well:
@@ -795,12 +781,39 @@ def generate_liquid_handler_notebook(
                 return "sample stock"
             if type_code == SampleType.MaxPlate.Load:
                 return "load stock"
-            if type_code == SampleType.MaxPlate.Probe:
-                return "probe stock"
             return "buffer"
 
+    def column_transfers_for_wells(wells, per_well_volume, volume_limit=1000.0):
+        column_map: Dict[int, List[float]] = {}
+        for well in sorted((w for w in wells if w), key=well_position_sort_key):
+            row_idx = ord(well[0]) - ord("A")
+            column_number = int(well[1:])
+            column_map.setdefault(column_number, [0.0] * 8)[row_idx] = per_well_volume
+        transfers: List[List[List[float]]] = []
+        current_batch: List[List[float]] = []
+        per_channel_totals = [0.0] * 8
+        for column in sorted(column_map.keys()):
+            volumes = [round(vol, 1) for vol in column_map[column]]
+            exceeds = any(per_channel_totals[idx] + volumes[idx] > volume_limit for idx in range(8))
+            if exceeds and current_batch:
+                transfers.append(current_batch)
+                current_batch = []
+                per_channel_totals = [0.0] * 8
+            for idx in range(8):
+                per_channel_totals[idx] += volumes[idx]
+            current_batch.append([column, volumes])
+        if current_batch:
+            transfers.append(current_batch)
+        return transfers
+
+    def format_transfer_batch(entries):
+        ordered = sorted(entries, key=lambda e: (e[2][0], int(e[2][1:])))
+        return "[" + ", ".join(
+            f"('{source_plate}', '{source_well}', '{target_well}')" for source_plate, source_well, target_well in ordered
+        ) + "]"
+
     for sample_id in combined_sample_ids:
-        record = combined_liquids[sample_id]
+        record = combined_samples[sample_id]
         stock_resource = stock_resource_map[sample_id]
 
         ordered_occurrences = []
@@ -840,23 +853,115 @@ def generate_liquid_handler_notebook(
     else:
         main_code.append("# No sample stock transfers required\n\n")
 
+    buffer_batches: list[tuple[str, list[list[object]]]] = []
     if buffer_prefill_plan:
-        main_code.append('print("Prefilling buffer into dilution plate columns...")\n')
         for plate_resource_name, column_map in sorted(buffer_prefill_plan.items()):
+            column_transfers = []
+            per_channel_totals = [0.0] * 8
+            current_batch: list[list[object]] = []
             for column_number in sorted(column_map.keys()):
                 row_map = column_map[column_number]
                 volumes_list = [round(float(row_map.get(row_idx, 0.0)), 1) for row_idx in range(8)]
-                volumes_json = json.dumps(volumes_list)
-                main_code.append(
-                    f"await multi_channel_transfer_from_tube('{buffer_resource_name}', '{plate_resource_name}', {column_number}, {volumes_json})\n"
-                )
+                exceeds_limit = False
+                for idx in range(8):
+                    if per_channel_totals[idx] + volumes_list[idx] > 1000:
+                        exceeds_limit = True
+                        break
+                if exceeds_limit and current_batch:
+                    buffer_batches.append((plate_resource_name, current_batch))
+                    current_batch = []
+                    per_channel_totals = [0.0] * 8
+                for idx in range(8):
+                    per_channel_totals[idx] += volumes_list[idx]
+                current_batch.append([column_number, volumes_list])
+            if current_batch:
+                buffer_batches.append((plate_resource_name, current_batch))
+
+    buffer_follow_up = []
+    for plate_name, wells, volume in (
+        ("final_plate", assay_shared_wells.get("stock_buffer", []), ASSAY_FINAL_VOLUME_UL),
+        ("max_plate_final", max_shared_wells.get("stock_buffer", []), MAX_FINAL_VOLUME_UL),
+    ):
+        for batch in column_transfers_for_wells(wells, volume):
+            buffer_follow_up.append((plate_name, batch))
+
+    shared_resources = []
+    for resource_map, plate_name, volume in (
+        (assay_shared_wells, "final_plate", ASSAY_FINAL_VOLUME_UL),
+        (max_shared_wells, "max_plate_final", MAX_FINAL_VOLUME_UL),
+    ):
+        for resource in sorted(resource_map.keys()):
+            wells = [w for w in resource_map[resource] if w]
+            if not wells:
+                continue
+            batches = column_transfers_for_wells(wells, volume)
+            shared_resources.extend((resource, plate_name, wells, batch) for batch in batches)
+
+    buffer_total_calls = len(buffer_batches) + len(buffer_follow_up)
+    buffer_calls_done = 0
+
+    if buffer_batches:
+        main_code.append('print("Prefilling buffer into dilution plate columns...")\n')
+        for batch_plate, column_transfers in buffer_batches:
+            keep_tips = (buffer_calls_done + 1) < buffer_total_calls
+            transfers_json = json.dumps(column_transfers)
+            main_code.append(
+                f"await multi_channel_transfer_from_tube('{buffer_resource_name}', '{batch_plate}', {transfers_json}, keep_tips={str(keep_tips)})\n"
+            )
+            buffer_calls_done += 1
         main_code.append("\n")
     else:
-        main_code.append("# No buffer prefill required\n\n")
+        if buffer_total_calls == 0:
+            main_code.append("# No buffer prefill required\n\n")
+        else:
+            main_code.append("# No dilution-plate buffer prefill required\n\n")
+
+    if buffer_follow_up:
+        for plate_name, transfers in buffer_follow_up:
+            keep_tips = (buffer_calls_done + 1) < buffer_total_calls
+            main_code.append(f'print("Loading stock_buffer into {plate_name}...")\n')
+            transfers_json = json.dumps(transfers)
+            main_code.append(
+                f"await multi_channel_transfer_from_tube('{buffer_resource_name}', '{plate_name}', {transfers_json}, keep_tips={str(keep_tips)})\n"
+            )
+            buffer_calls_done += 1
+            wells_loaded = sum(1 for _, vols in transfers for vol in vols if vol > 0)
+            main_code.append(f'print("stock_buffer: loaded {wells_loaded} wells on {plate_name}")\n')
+        main_code.append("\n")
+
+    def load_shared_resource(resource_name, transfers_final_batches, transfers_max_batches):
+        tasks = []
+        if transfers_final_batches:
+            tasks.extend(("final_plate", batch) for batch in transfers_final_batches)
+        if transfers_max_batches:
+            tasks.extend(("max_plate_final", batch) for batch in transfers_max_batches)
+        if not tasks:
+            return
+        for idx, (plate, batch) in enumerate(tasks):
+            keep = idx < len(tasks) - 1
+            main_code.append(f'print("Loading {resource_name} into {plate}...")\n')
+            transfers_json = json.dumps(batch)
+            main_code.append(
+                f"await multi_channel_transfer_from_tube('{resource_name}', '{plate}', {transfers_json}, keep_tips={str(keep)})\n"
+            )
+            wells_loaded = sum(sum(1 for vol in volumes if vol > 0) for _, volumes in batch)
+            main_code.append(f'print("{resource_name}: loaded {wells_loaded} wells on {plate}")\n')
+        main_code.append("\n")
+
+    load_shared_resource(
+        "stock_neutralization",
+        column_transfers_for_wells(assay_shared_wells.get("stock_neutralization", []), ASSAY_FINAL_VOLUME_UL),
+        column_transfers_for_wells(max_shared_wells.get("stock_neutralization", []), MAX_FINAL_VOLUME_UL),
+    )
+    load_shared_resource(
+        "stock_regeneration",
+        column_transfers_for_wells(assay_shared_wells.get("stock_regeneration", []), ASSAY_FINAL_VOLUME_UL),
+        column_transfers_for_wells(max_shared_wells.get("stock_regeneration", []), MAX_FINAL_VOLUME_UL),
+    )
 
     if dilution_plan:
         main_code.append('print("Starting serial dilutions...")\n')
-        main_code.append('tip_reuse_state = {"loaded": False}\n')
+        track_labels = []
         for (
             source_plate_resource_name,
             target_plate_resource_name,
@@ -864,45 +969,21 @@ def generate_liquid_handler_notebook(
             target_column_number,
         ), row_map in sorted(dilution_plan.items()):
             transfer_volumes = [round(float(row_map[row_idx]["transfer_volume"]), 1) if row_idx in row_map else 0.0 for row_idx in range(8)]
-            total_volumes = [round(float(row_map[row_idx]["total_volume"]), 1) if row_idx in row_map else 0.0 for row_idx in range(8)]
             sample_labels = [row_map[row_idx]["sample_id"] if row_idx in row_map else "" for row_idx in range(8)]
+            if track_labels == sample_labels:
+                keep_tips = True
+            else:
+                keep_tips = False
+            track_labels = sample_labels
             transfer_json = json.dumps(transfer_volumes)
-            total_json = json.dumps(total_volumes)
-            labels_json = json.dumps(sample_labels)
             main_code.append(
-                f"await multi_channel_serial_dilution('{source_plate_resource_name}', '{target_plate_resource_name}', {source_column_number}, {target_column_number}, {transfer_json}, {total_json}, {labels_json}, CHANGE_TIPS_BETWEEN_DILUTIONS, tip_reuse_state)\n"
+                f"await multi_channel_serial_dilution('{source_plate_resource_name}', '{target_plate_resource_name}', {source_column_number}, {target_column_number}, {transfer_json}, keep_tips={str(keep_tips)})\n"
             )
         main_code.append(
-            "if not CHANGE_TIPS_BETWEEN_DILUTIONS and tip_reuse_state['loaded']:\n    await lh.drop_tips([lh.deck.get_resource('trash')] * len(tip_reuse_state['tip_resources']))\n    tip_reuse_state['loaded'] = False\n    tip_reuse_state['tip_resources'] = []\n\n"
+            "await lh.discard_tips()\n\n"
         )
-        main_code.append("\n")
     else:
         main_code.append("# No serial dilutions required\n\n")
-
-    for log_line in dilution_logs:
-        main_code.append(log_line + "\n")
-
-    if assay_shared_wells:
-        main_code.append('print("Loading shared reagents into assay final plate...")\n')
-        for resource in sorted(assay_shared_wells.keys()):
-            wells = sorted(set(assay_shared_wells[resource]), key=well_position_sort_key)
-            wells_literal = json.dumps(wells)
-            main_code.append(
-                f"await load_plate_columns_from_stock('{resource}', 'final_plate', {wells_literal}, FINAL_VOLUME)\n"
-            )
-            main_code.append(f'print("{resource}: loaded {len(wells)} assay wells")\n')
-        main_code.append("\n")
-
-    if max_shared_wells:
-        main_code.append('print("Loading shared reagents into Max Plate...")\n')
-        for resource in sorted(max_shared_wells.keys()):
-            wells = sorted(set(max_shared_wells[resource]), key=well_position_sort_key)
-            wells_literal = json.dumps(wells)
-            main_code.append(
-                f"await load_plate_columns_from_stock('{resource}', 'max_plate_final', {wells_literal}, MAX_PLATE_FINAL_VOLUME)\n"
-            )
-            main_code.append(f'print("{resource}: loaded {len(wells)} Max Plate wells")\n')
-        main_code.append("\n")
 
     volume_resources = sorted(resource_volume_uL.keys())
     volume_summary_lines = [
@@ -928,27 +1009,49 @@ def generate_liquid_handler_notebook(
 
     if sample_dilution_map:
         main_code.append('print("Transferring assay dilutions to final plate...")\n')
+        batch_entries: List[tuple[str, str, str]] = []
         for (sample_id, well_idx), (source_plate, source_well) in sorted(
             sample_dilution_map.items(), key=lambda x: (x[0][0], x[0][1])
         ):
-            final_well = samples[well_idx].get("WellPosition")
+            final_well = assay_plate[well_idx].get("WellPosition")
             if not final_well:
                 raise ValueError(f"Missing WellPosition for assay well index {well_idx}")
+            batch_entries.append((source_plate, source_well, final_well))
+            if len(batch_entries) == 8:
+                batch_literal = format_transfer_batch(batch_entries)
+                main_code.append(
+                    f"await transfer_to_final_plate('final_plate', {batch_literal}, FINAL_VOLUME)\n"
+                )
+                batch_entries = []
+        if batch_entries:
+            batch_literal = format_transfer_batch(batch_entries)
             main_code.append(
-                f"await transfer_to_final_plate('{source_plate}', 'final_plate', '{source_well}', '{final_well}', FINAL_VOLUME)  # {sample_id}\n"
+                f"await transfer_to_final_plate('final_plate', {batch_literal}, FINAL_VOLUME)\n"
             )
+        main_code.append("\n")
 
     if max_dilution_map:
         main_code.append('\nprint("Transferring Max Plate dilutions to final plate...")\n')
+        batch_entries: List[tuple[str, str, str]] = []
         for (sample_id, well_idx), (source_plate, source_well) in sorted(
             max_dilution_map.items(), key=lambda x: (x[0][0], x[0][1])
         ):
-            final_well = probe_info[well_idx].get("WellPosition")
+            final_well = max_plate[well_idx].get("WellPosition")
             if not final_well:
                 raise ValueError(f"Missing WellPosition for Max Plate well index {well_idx}")
+            batch_entries.append((source_plate, source_well, final_well))
+            if len(batch_entries) == 8:
+                batch_literal = format_transfer_batch(batch_entries)
+                main_code.append(
+                    f"await transfer_to_final_plate('max_plate_final', {batch_literal}, MAX_PLATE_FINAL_VOLUME)\n"
+                )
+                batch_entries = []
+        if batch_entries:
+            batch_literal = format_transfer_batch(batch_entries)
             main_code.append(
-                f"await transfer_to_final_plate('{source_plate}', 'max_plate_final', '{source_well}', '{final_well}', MAX_PLATE_FINAL_VOLUME)  # {sample_id}\n"
+                f"await transfer_to_final_plate('max_plate_final', {batch_literal}, MAX_PLATE_FINAL_VOLUME)\n"
             )
+        main_code.append("\n")
 
     main_code.append('\nprint("Liquid handling complete!")')
 
