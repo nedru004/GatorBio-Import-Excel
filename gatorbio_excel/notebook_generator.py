@@ -14,8 +14,15 @@ from .excel_parser import parse_plate_layout, read_excel_file
 def generate_liquid_handler_notebook(
     excel_path: Path | str,
     output_path: Path | str | None = None,
+    buffer_source: str = "tube",
 ) -> Path:
-    """Generate a Jupyter notebook for liquid handling using pylabrobot."""
+    """Generate a Jupyter notebook for liquid handling using pylabrobot.
+    
+    Args:
+        excel_path: Path to the Excel file to process
+        output_path: Path for the output notebook (default: same name as Excel with .ipynb)
+        buffer_source: Buffer source type - "tube" for 50mL tube or "trough" for 60mL trough (default: "tube")
+    """
 
     excel_path = Path(excel_path)
     if not excel_path.exists():
@@ -268,7 +275,7 @@ def generate_liquid_handler_notebook(
             "source": [
                 "# Liquid Handler Program for GatorBio Assay\n",
                 f"Generated from: {excel_path.name}\n",
-                f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n",
+                f"Generated on: {datetime.now().strftime('%Y-%B-%d %H:%M:%S')}\n",
                 "This notebook prepares assay and Max Plate (ProbeInfo) dilutions using pylabrobot.",
             ],
         }
@@ -322,6 +329,7 @@ def generate_liquid_handler_notebook(
         "MAX_PLATE_DILUTION_VOLUME = 300  # µL per dilution in Max Plate deep well\n",
         "\n",
         "# Carrier Rail Assignment\n",
+        f"BUFFER_SOURCE = '{buffer_source}'\n",
         "PLATE_CARRIER_RAIL = 19\n",
         "TUBE_CARRIER_RAIL = 35\n",
         "TIP_CARRIER_RAIL = 7\n",
@@ -370,6 +378,8 @@ def generate_liquid_handler_notebook(
         "    Tube_CAR_32_A00,\n",
         "    hamilton_tube_carrier_12_b00,\n",
         "    Cor_Falcon_tube_50mL_Vb,\n",
+        "    Trough_CAR_5R50_A00,\n",
+        "    hamilton_1_trough_60ml_Vb,\n",
         ")\n",
         "from pylabrobot.liquid_handling.standard import Mix\n",
         "\n",
@@ -408,15 +418,26 @@ def generate_liquid_handler_notebook(
         '    plt_car[3] = nest_96_wellplate_2mL_Vb(name=dilution_plate_names[1])  # Additional dilutions\n',
         "lh.deck.assign_child_resource(plt_car, rails=PLATE_CARRIER_RAIL)\n",
         "\n",
-        "# 50 mL stock tubes\n",
+        f"# Stock containers\n",
         f"stock_resources = {tube_resources}\n",
-        'tube_car = hamilton_tube_carrier_12_b00(name="tube_carrier")\n',
-        "for i, resource_name in enumerate(stock_resources):\n",
-        "    if i >= 12:\n",
-        '        print(f"Warning: Not enough tube positions for {resource_name}")\n',
-        "        continue\n",
-        "    tube_car[11 - i] = Cor_Falcon_tube_50mL_Vb(name=resource_name)\n",
-        "lh.deck.assign_child_resource(tube_car, rails=TUBE_CARRIER_RAIL)\n",
+
+        "# Separate buffer from other resources if using trough\n",
+        'if BUFFER_SOURCE == "trough":\n',
+        '    trough_car = Trough_CAR_5R50_A00(name="trough_carrier")\n',
+        '    for i, resource_name in enumerate(stock_resources):\n',
+        '        if i >= 6:\n',
+        '            print(f"Warning: Not enough trough positions for {resource_name}")\n',
+        '            continue\n',
+        '        trough_car[i] = hamilton_1_trough_60ml_Vb(name=resource_name)\n',
+        "    lh.deck.assign_child_resource(trough_car, rails=TUBE_CARRIER_RAIL)\n",
+        "else:\n",
+        '    tube_car = hamilton_tube_carrier_12_b00(name="tube_carrier")\n',
+        "    for i, resource_name in enumerate(stock_resources):\n",
+        "        if i >= 12:\n",
+        '            print(f"Warning: Not enough tube positions for {resource_name}")\n',
+        "            continue\n",
+        "        tube_car[i] = Cor_Falcon_tube_50mL_Vb(name=resource_name)\n",
+        "    lh.deck.assign_child_resource(tube_car, rails=TUBE_CARRIER_RAIL)\n",
         "\n",
         "lh.summary()",
     ]
@@ -459,9 +480,8 @@ def generate_liquid_handler_notebook(
         "        columns[column].sort()\n",
         "    return columns\n",
         "\n",
-        "async def multi_channel_transfer_from_tube(tube_resource_name, plate_name, column_transfers, keep_tips=False):\n",
-        "    # column_transfers: List[[column_number, volume_list_8]]\n",
-        "    tube = lh.deck.get_resource(tube_resource_name)\n",
+        "async def multi_channel_transfer_from_tube(tube_resource_name, plate_name, column_transfers, BUFFER_SOURCE, keep_tips=False):\n",
+        "    resource_container = lh.deck.get_resource(tube_resource_name)\n",
         "    plate = lh.deck.get_resource(plate_name)\n",
         "    MAX_TIP_VOLUME = 1000\n",
         "    channel_set = set()\n",
@@ -471,12 +491,15 @@ def generate_liquid_handler_notebook(
         "        channel_set.update(channel_indices)\n",
         "        for idx in channel_indices:\n",
         "            per_channel_total[idx] += volumes[idx]\n",
+        "    # Add extra volume to each channel total since plunger movement is non-linear\n"
+        "    per_channel_total = [total + 20 for total in per_channel_total]\n",
         "    # Check tip presence from machine\n",
         "    tip_presence = await lh.backend.request_tip_presence()\n",
         "    channels_with_tips = [i for i, has_tip in enumerate(tip_presence) if has_tip == 1]\n",
         "    # Check if we need to discard tips (if required channels don't match existing tips)\n",
-        "    if not set(channel_set).issubset(set(channels_with_tips)) and not keep_tips:\n",
-        "        await lh.discard_tips()\n",
+        "    if not set(channel_set).issubset(set(channels_with_tips)) or not keep_tips:\n",
+        "        if channels_with_tips:\n",
+        "           await lh.discard_tips()\n",
         "        tip_resources = next_tip_positions(len(channel_set))\n",
         "        await lh.pick_up_tips(tip_resources, use_channels=list(channel_set))\n",
         "    print(f'[DEBUG] multi_channel_transfer_from_tube: channels={channel_set}')\n",
@@ -484,19 +507,16 @@ def generate_liquid_handler_notebook(
         "    for idx, total in enumerate(per_channel_total):\n",
         "        if total > MAX_TIP_VOLUME:\n",
         "            raise ValueError(f'Requested volume {total} µL exceeds 1000 µL limit for tip channel {idx}.')\n",
-        "    for idx in channel_set:\n",
-        "        print(f'[DEBUG] Aspirating {per_channel_total[idx]:.1f} µL into channel {idx}')\n",
-        "        await lh.aspirate(\n",
-        "            [tube],\n",
-        "            vols=[per_channel_total[idx]],\n",
-        "            use_channels=[idx],\n",
-        "        )\n",
-        "    # Check volume in tips after aspiration\n",
-        "    print('[DEBUG] Checking volume in tips after aspiration:')\n",
-        "    for channel in channel_set:\n",
-        "        vol_in_tip = await lh.backend.request_volume_in_tip(channel)\n",
-        "        expected_vol = per_channel_total[channel]\n",
-        "        print(f'  Channel {channel}: {vol_in_tip:.1f} µL (expected: {expected_vol:.1f} µL)')\n",
+        "    if BUFFER_SOURCE != 'trough':\n",
+        "        for idx in channel_set:\n",
+        "            print(f'[DEBUG] Aspirating {per_channel_total[idx]:.1f} µL into channel {idx}')\n",
+        "            await lh.aspirate([resource_container], vols=[per_channel_total[idx]], use_channels=[idx])\n",
+        "        # Check volume in tips after aspiration\n",
+        "        print('[DEBUG] Checking volume in tips after aspiration:')\n",
+        "        for channel in channel_set:\n",
+        "            vol_in_tip = await lh.backend.request_volume_in_tip(channel)\n",
+        "            expected_vol = per_channel_total[channel]\n",
+        "            print(f'  Channel {channel}: {vol_in_tip:.1f} µL (expected: {expected_vol:.1f} µL)')\n",
         "    for column_number, volumes in column_transfers:\n",
         "        channels_to_use = []\n",
         "        volumes_filtered = []\n",
@@ -506,12 +526,15 @@ def generate_liquid_handler_notebook(
         "                volumes_filtered.append(volume)\n",
         "        target_positions = [f\"{chr(ord('A') + channel)}{column_number}\" for channel in channels_to_use]\n",
         "        targets_all = [plate[pos][0] for pos in target_positions]\n",
-        "        await lh.dispense(\n",
-        "            targets_all,\n",
-        "            vols=volumes_filtered,\n",
-        "            use_channels= channels_to_use,\n",
-        "            offsets=[Coordinate(0, 0, 5)] * len(channels_to_use),\n",
-        "        )\n",
+        "        if BUFFER_SOURCE == 'trough':\n",
+        "            await lh.aspirate([resource_container]*len(channels_to_use), vols=volumes_filtered, use_channels=channels_to_use)\n",
+        "        await lh.dispense(targets_all, vols=volumes_filtered, use_channels=channels_to_use, offsets=[Coordinate(0, 0, 5)] * len(channels_to_use))\n",
+        "        # Check volume in tips after dispense\n",
+        "        print('[DEBUG] Checking volume in tips after dispense:')\n",
+        "        for channel in channels_to_use:\n",
+        "            vol_in_tip = await lh.backend.request_volume_in_tip(channel)\n",
+        "            expected_vol = volumes[channel]\n",
+        "            print(f'  Channel {channel}: {vol_in_tip:.1f} µL (expected: {expected_vol:.1f} µL)')\n",
         "\n",
         "async def multi_channel_serial_dilution(source_plate_name, target_plate_name, source_column, target_column, transfer_volumes, keep_tips=False):\n",
         "    channel_indices = [idx for idx, vol in enumerate(transfer_volumes) if vol and vol > 0]\n",
@@ -523,8 +546,9 @@ def generate_liquid_handler_notebook(
         "    tip_presence = await lh.backend.request_tip_presence()\n",
         "    channels_with_tips = [i for i, has_tip in enumerate(tip_presence) if has_tip == 1]\n",
         "    # Check if we need to discard tips (if required channels don't match existing tips)\n",
-        "    if not set(channel_indices).issubset(set(channels_with_tips)) and not keep_tips:\n",
-        "        await lh.discard_tips()\n",
+        "    if not set(channel_indices).issubset(set(channels_with_tips)) or not keep_tips:\n",
+        "        if channels_with_tips:\n",
+        "           await lh.discard_tips()\n",
         "        tip_resources = next_tip_positions(len(channel_indices))\n",
         "        await lh.pick_up_tips(tip_resources, use_channels=list(channel_indices))\n",
         "    source_containers = [source_plate[pos][0] for pos in source_positions]\n",
@@ -717,7 +741,7 @@ def generate_liquid_handler_notebook(
                     volumes[row_index] = round(load_volume, 1)
                     transfers_json = json.dumps([[column_number, volumes]])
                     sample_prefill_commands.append(
-                        f"await multi_channel_transfer_from_tube('{stock_resource}', '{plate_resource_name}', {transfers_json})\n"
+                        f"await multi_channel_transfer_from_tube('{stock_resource}', '{plate_resource_name}', {transfers_json}, BUFFER_SOURCE)\n"
                     )
                     message = f"Loaded {sample_id} {liquid_desc} into {target_well} ({load_volume:.1f} µL)"
                     if transfer_out > 0 and not use_single_well:
@@ -906,7 +930,7 @@ def generate_liquid_handler_notebook(
             keep_tips = (buffer_calls_done + 1) < buffer_total_calls
             transfers_json = json.dumps(column_transfers)
             main_code.append(
-                f"await multi_channel_transfer_from_tube('{buffer_resource_name}', '{batch_plate}', {transfers_json}, keep_tips={str(keep_tips)})\n"
+                f"await multi_channel_transfer_from_tube('{buffer_resource_name}', '{batch_plate}', {transfers_json}, BUFFER_SOURCE, keep_tips={str(keep_tips)})\n"
             )
             buffer_calls_done += 1
         main_code.append("\n")
@@ -922,7 +946,7 @@ def generate_liquid_handler_notebook(
             main_code.append(f'print("Loading stock_buffer into {plate_name}...")\n')
             transfers_json = json.dumps(transfers)
             main_code.append(
-                f"await multi_channel_transfer_from_tube('{buffer_resource_name}', '{plate_name}', {transfers_json}, keep_tips={str(keep_tips)})\n"
+                f"await multi_channel_transfer_from_tube('{buffer_resource_name}', '{plate_name}', {transfers_json}, BUFFER_SOURCE, keep_tips={str(keep_tips)})\n"
             )
             buffer_calls_done += 1
             wells_loaded = sum(1 for _, vols in transfers for vol in vols if vol > 0)
@@ -942,7 +966,7 @@ def generate_liquid_handler_notebook(
             main_code.append(f'print("Loading {resource_name} into {plate}...")\n')
             transfers_json = json.dumps(batch)
             main_code.append(
-                f"await multi_channel_transfer_from_tube('{resource_name}', '{plate}', {transfers_json}, keep_tips={str(keep)})\n"
+                f"await multi_channel_transfer_from_tube('{resource_name}', '{plate}', {transfers_json}, BUFFER_SOURCE, keep_tips={str(keep)})\n"
             )
             wells_loaded = sum(sum(1 for vol in volumes if vol > 0) for _, volumes in batch)
             main_code.append(f'print("{resource_name}: loaded {wells_loaded} wells on {plate}")\n')
