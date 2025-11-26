@@ -1,0 +1,10 @@
+# Python
+*.pyc
+__pycache__/
+
+# Archive folder
+archive/
+
+# OS
+.DS_Store
+
