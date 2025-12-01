@@ -417,8 +417,13 @@ def parse_assay_sheet(ws):
     return rs, fs, steps if steps else None
 
 
-def create_pre_experiment_config(pre_exp_data: Dict[str, object]) -> Dict[str, object]:
-    """Create the PreExperiment configuration JSON from parsed data."""
+def create_pre_experiment_config(pre_exp_data: Dict[str, object], num_loops: int = 7) -> Dict[str, object]:
+    """Create the PreExperiment configuration JSON from parsed data.
+    
+    Args:
+        pre_exp_data: Parsed data from PreExperiment sheet
+        num_loops: Number of loops in the assay experiment (default: 7)
+    """
 
     now = datetime.now()
     time_str = now.strftime("%m-%d-%Y %H:%M:%S")
@@ -446,8 +451,8 @@ def create_pre_experiment_config(pre_exp_data: Dict[str, object]) -> Dict[str, o
         "bRegeneration": pre_exp_data.get("bRegeneration", True),
         "bRegenerationStart": pre_exp_data.get("bRegenerationStart", False),
         "RegenerationNum": 99999,
-        "IsOpenRNAfterAssay": {str(i): True for i in range(7)},
-        "IsOpenRNBeforeAssay": {str(i): True for i in range(7)},
+        "IsOpenRNAfterAssay": {str(i): True for i in range(num_loops)},
+        "IsOpenRNBeforeAssay": {str(i): True for i in range(num_loops)},
         "RegenerationMode": 0,
         "ShakerASpeedDeviationLow": 0,
         "ShakerBSpeedDeviationLow": 0,
