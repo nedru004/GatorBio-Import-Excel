@@ -370,13 +370,24 @@ def parse_assay_sheet(ws):
         ):
             continue
 
-        loop_num = int(row[0])
-        plate = int(row[1])
-        column = int(row[2])
-        probe_column = int(row[3])
+        # Check if row[1], row[2], row[3] are numeric before converting
+        try:
+            loop_num = int(row[0])
+            plate = int(row[1])
+            column = int(row[2])
+            probe_column = int(row[3])
+        except (ValueError, TypeError):
+            continue
+
         step_type_str = str(row[4]).strip().lower() if len(row) > 4 and row[4] else ""
-        time = int(row[5]) if len(row) > 5 and row[5] else 0
-        speed = int(row[6]) if len(row) > 6 and row[6] else 0
+        try:
+            time = int(row[5]) if len(row) > 5 and row[5] else 0
+        except (ValueError, TypeError):
+            time = 0
+        try:
+            speed = int(row[6]) if len(row) > 6 and row[6] else 0
+        except (ValueError, TypeError):
+            speed = 0
 
         sample_column = (plate - 1) * 12 + column
 
