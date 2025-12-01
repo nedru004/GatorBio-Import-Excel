@@ -93,20 +93,21 @@ def parse_pre_experiment_sheet(ws) -> Dict[str, object]:
 
 def parse_plate_layout(ws) -> Tuple[List[Dict[str, object]], List[Dict[str, object]]]:
     """
-    Parse the Experiment sheet to extract sample and probe information.
+    Parse the Experiment sheet to extract 96 and max plate information.
 
     Simple sequential reading:
-    - SampleInfo: Read from C14-H110 (row 14 is header, rows 15-110 are data)
-    - ProbeInfo: Read from Q14-V110 (row 14 is header, rows 15-110 are data)
+    - NinetySixInfo: Read from C14-H110 (row 14 is header, rows 15-110 are data)
+    - MaxInfo: Read from Q14-V110 (row 14 is header, rows 15-110 are data)
     """
 
-    samples: List[Dict[str, object]] = []
-    probe_info: List[Dict[str, object]] = []
+    ninety_six_info: List[Dict[str, object]] = []
+    max_info: List[Dict[str, object]] = []
 
     for _ in range(96):
-        samples.append(
+        ninety_six_info.append(
             {
                 "Type": SampleType.Assay.EMPTY,
+                "StringType": "empty",
                 "Concentration": -1.0,
                 "MolecularWeight": -1.0,
                 "MolarConcentration": -1.0,
@@ -115,9 +116,10 @@ def parse_plate_layout(ws) -> Tuple[List[Dict[str, object]], List[Dict[str, obje
                 "WellPosition": "",
             }
         )
-        probe_info.append(
+        max_info.append(
             {
                 "Type": SampleType.MaxPlate.EMPTY,
+                "StringType": "empty",
                 "Concentration": -1.0,
                 "MolecularWeight": -1.0,
                 "MolarConcentration": -1.0,
@@ -145,7 +147,7 @@ def parse_plate_layout(ws) -> Tuple[List[Dict[str, object]], List[Dict[str, obje
         sample_type = map_assay_label_to_code(type_str)
 
         if sample_type in (SampleType.Assay.Regeneration, SampleType.Assay.Neutralization):
-            sample_id = "N/A"
+            sample_id = ""
 
         conc_cell = row[4] if len(row) > 4 else None
         concentration = -1.0
@@ -189,8 +191,9 @@ def parse_plate_layout(ws) -> Tuple[List[Dict[str, object]], List[Dict[str, obje
         ):
             sample_type = SampleType.Assay.Buffer
             sample_id = ""
-        samples[sample_idx] = {
+        ninety_six_info[sample_idx] = {
             "Type": sample_type,
+            "StringType": type_str,
             "Concentration": concentration,
             "MolecularWeight": molecular_weight,
             "MolarConcentration": molar_concentration,
@@ -217,10 +220,8 @@ def parse_plate_layout(ws) -> Tuple[List[Dict[str, object]], List[Dict[str, obje
         type_str = str(type_cell).strip() if type_cell is not None else ""
 
         probe_type = map_max_plate_label_to_code(type_str)
-        if probe_type == SampleType.MaxPlate.Probe and not sample_id:
-            sample_id = "Probe"
         if probe_type in {SampleType.MaxPlate.Regeneration, SampleType.MaxPlate.Neutralization}:
-            sample_id = "N/A"
+            sample_id = ""
 
         conc_cell = row[18] if len(row) > 18 else None
         concentration = -1.0
@@ -269,8 +270,9 @@ def parse_plate_layout(ws) -> Tuple[List[Dict[str, object]], List[Dict[str, obje
             probe_type = SampleType.MaxPlate.Buffer
             sample_id = ""
         if probe_type == SampleType.MaxPlate.EMPTY:
-            probe_info[probe_idx] = {
+            max_info[probe_idx] = {
                 "Type": probe_type,
+                "StringType": type_str,
                 "Concentration": 0.0,
                 "MolecularWeight": 0.0,
                 "MolarConcentration": 0.0,
@@ -279,8 +281,9 @@ def parse_plate_layout(ws) -> Tuple[List[Dict[str, object]], List[Dict[str, obje
                 "WellPosition": well_position,
             }
         else:
-            probe_info[probe_idx] = {
+            max_info[probe_idx] = {
                 "Type": probe_type,
+                "StringType": type_str,
                 "Concentration": concentration,
                 "MolecularWeight": molecular_weight,
                 "MolarConcentration": molar_concentration,
@@ -291,7 +294,7 @@ def parse_plate_layout(ws) -> Tuple[List[Dict[str, object]], List[Dict[str, obje
 
         probe_idx += 1
 
-    return samples, probe_info
+    return ninety_six_info, max_info
 
 
 def parse_assay_sheet(ws):
@@ -463,8 +466,8 @@ def create_pre_experiment_config(pre_exp_data: Dict[str, object]) -> Dict[str, o
 
 
 def create_experiment_config(
-    samples: List[Dict[str, object]],
-    probe_info: List[Dict[str, object]],
+    ninety_six_info: List[Dict[str, object]],
+    max_info: List[Dict[str, object]],
     rs: Dict[str, object],
     fs: Dict[str, object],
     assay_steps: Optional[List[List[dict]]] = None,
@@ -511,8 +514,8 @@ def create_experiment_config(
         ]]
 
     config = {
-        "SampleInfo": samples,
-        "ProbeInfo": probe_info,
+        "NinetySixInfo": ninety_six_info,
+        "MaxInfo": max_info,
         "rs": rs,
         "fs": fs,
         "listLoopStep": assay_steps,

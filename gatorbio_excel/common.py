@@ -108,10 +108,49 @@ def sanitize_identifier(name: object, prefix: str = "ID") -> str:
     return safe
 
 
+# Reverse lookup maps: numeric code -> canonical string label
+_ASSAY_CODE_TO_LABEL = {
+    SampleType.Assay.EMPTY: "empty",
+    SampleType.Assay.Sample: "sample",
+    SampleType.Assay.Buffer: "buffer",
+    SampleType.Assay.Load: "load",
+    SampleType.Assay.Regeneration: "regeneration",
+    SampleType.Assay.Neutralization: "neutralization",
+    SampleType.Assay.Activation: "activation",
+    SampleType.Assay.Quench: "quench",
+    SampleType.Assay.Wash: "wash",
+}
+
+_MAX_PLATE_CODE_TO_LABEL = {
+    SampleType.MaxPlate.EMPTY: "empty",
+    SampleType.MaxPlate.Probe: "probe",
+    SampleType.MaxPlate.Sample: "sample",
+    SampleType.MaxPlate.Buffer: "buffer",
+    SampleType.MaxPlate.Load: "load",
+    SampleType.MaxPlate.Regeneration: "regeneration",
+    SampleType.MaxPlate.Neutralization: "neutralization",
+    SampleType.MaxPlate.Activation: "activation",
+    SampleType.MaxPlate.Quench: "quench",
+    SampleType.MaxPlate.Wash: "wash",
+}
+
+
+def map_assay_code_to_label(code: int) -> str:
+    """Convert an assay numeric code to its canonical string label."""
+    return _ASSAY_CODE_TO_LABEL.get(code, "buffer")
+
+
+def map_max_plate_code_to_label(code: int) -> str:
+    """Convert a max plate numeric code to its canonical string label."""
+    return _MAX_PLATE_CODE_TO_LABEL.get(code, "buffer")
+
+
 __all__ = [
     "SampleType",
     "map_assay_label_to_code",
     "map_max_plate_label_to_code",
+    "map_assay_code_to_label",
+    "map_max_plate_code_to_label",
     "sanitize_identifier",
 ]
 
