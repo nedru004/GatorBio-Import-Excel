@@ -37,22 +37,23 @@ def generate_asy_file(excel_path: Path | str, output_path: Path | str | None = N
         samples, probe_info = parse_plate_layout(sheets["Experiment"])
         print(f"Parsed {len([s for s in samples if s['SampleID']])} samples")
 
-        core_sample_keys = {
+        # Order: Type, MolarConcentration, Information, SampleID, MolecularWeight, Concentration
+        core_sample_keys = [
             "Type",
-            "Concentration",
-            "MolecularWeight",
             "MolarConcentration",
             "Information",
             "SampleID",
-        }
-        core_probe_keys = {
-            "Type",
-            "Concentration",
             "MolecularWeight",
+            "Concentration",
+        ]
+        core_probe_keys = [
+            "Type",
             "MolarConcentration",
             "Information",
             "SampleID",
-        }
+            "MolecularWeight",
+            "Concentration",
+        ]
         samples_for_asy = [{k: sample.get(k) for k in core_sample_keys} for sample in samples]
         probe_info_for_asy = [{k: probe.get(k) for k in core_probe_keys} for probe in probe_info]
     else:
@@ -60,22 +61,22 @@ def generate_asy_file(excel_path: Path | str, output_path: Path | str | None = N
         samples_for_asy = [
             {
                 "Type": 4,
-                "Concentration": -1.0,
-                "MolecularWeight": -1.0,
                 "MolarConcentration": -1.0,
                 "Information": "",
                 "SampleID": "",
+                "MolecularWeight": -1.0,
+                "Concentration": -1.0,
             }
             for _ in range(96)
         ]
         probe_info_for_asy = [
             {
                 "Type": 1,
-                "Concentration": -1.0,
-                "MolecularWeight": -1.0,
                 "MolarConcentration": -1.0,
                 "Information": "",
                 "SampleID": "",
+                "MolecularWeight": -1.0,
+                "Concentration": -1.0,
             }
             for _ in range(96)
         ]
@@ -120,7 +121,8 @@ def generate_asy_file(excel_path: Path | str, output_path: Path | str | None = N
     else:
         print("Warning: Assay sheet not found, using defaults")
 
-    # Get number of loops from assay_steps, default to 7 if not available
+    # Get number of loops from assay_steps
+    print(f"assay_steps: {assay_steps}")
     num_loops = len(assay_steps)
     pre_exp_config = create_pre_experiment_config(pre_exp_config_data, num_loops)
     exp_config = create_experiment_config(samples_for_asy, probe_info_for_asy, rs, fs, assay_steps)

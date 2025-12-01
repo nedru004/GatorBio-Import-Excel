@@ -543,8 +543,8 @@ def create_experiment_config(
         ]]
 
     config = {
-        "NinetySixInfo": ninety_six_info,
-        "MaxInfo": max_info,
+        "SampleInfo": ninety_six_info,
+        "ProbeInfo": max_info,
         "rs": rs,
         "fs": fs,
         "listLoopStep": assay_steps,
