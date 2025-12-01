@@ -121,7 +121,7 @@ def generate_asy_file(excel_path: Path | str, output_path: Path | str | None = N
         print("Warning: Assay sheet not found, using defaults")
 
     # Get number of loops from assay_steps, default to 7 if not available
-    num_loops = len(assay_steps) if assay_steps else 7
+    num_loops = len(assay_steps)
     pre_exp_config = create_pre_experiment_config(pre_exp_config_data, num_loops)
     exp_config = create_experiment_config(samples_for_asy, probe_info_for_asy, rs, fs, assay_steps)
 

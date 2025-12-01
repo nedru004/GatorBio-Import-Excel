@@ -337,30 +337,41 @@ def parse_assay_sheet(ws):
         "W6Speed": 1000,
     }
 
-    in_rs_section = False
-    for row in ws.iter_rows(values_only=True):
-        if row[0] and isinstance(row[0], str):
-            key = str(row[0]).strip().lower()
-            value = row[1] if len(row) > 1 else None
+    # Parse rs (regeneration settings) from rows 3-7, column B
+    # Row 3: 'repeat', Row 4: 'RTime', Row 5: 'RSpeed', Row 6: 'NTime', Row 7: 'NSpeed'
+    rs_rows = list(ws.iter_rows(min_row=3, max_row=7, values_only=True))
+    if len(rs_rows) >= 5:
+        try:
+            if rs_rows[0] and len(rs_rows[0]) > 1 and rs_rows[0][1] is not None:
+                rs["repeat"] = int(rs_rows[0][1])
+        except (ValueError, TypeError):
+            pass
+        try:
+            if rs_rows[1] and len(rs_rows[1]) > 1 and rs_rows[1][1] is not None:
+                rs["RTime"] = int(rs_rows[1][1])
+        except (ValueError, TypeError):
+            pass
+        try:
+            if rs_rows[2] and len(rs_rows[2]) > 1 and rs_rows[2][1] is not None:
+                rs["RSpeed"] = int(rs_rows[2][1])
+        except (ValueError, TypeError):
+            pass
+        try:
+            if rs_rows[3] and len(rs_rows[3]) > 1 and rs_rows[3][1] is not None:
+                rs["NTime"] = int(rs_rows[3][1])
+        except (ValueError, TypeError):
+            pass
+        try:
+            if rs_rows[4] and len(rs_rows[4]) > 1 and rs_rows[4][1] is not None:
+                rs["NSpeed"] = int(rs_rows[4][1])
+        except (ValueError, TypeError):
+            pass
 
-            if "regeneration step" in key or "rs" in key:
-                in_rs_section = True
-                continue
-
-            if in_rs_section and value is not None:
-                if "repeat" in key:
-                    rs["repeat"] = int(value)
-                elif "rtime" in key:
-                    rs["RTime"] = int(value)
-                elif "rspeed" in key:
-                    rs["RSpeed"] = int(value)
-                elif "ntime" in key:
-                    rs["NTime"] = int(value)
-                elif "nspeed" in key:
-                    rs["NSpeed"] = int(value)
-
+    # Parse assay steps from row 11 onwards
+    # Row 10 has headers: loop, probe, plate, column, sec, rpm, steptype
+    # Row 11+ has the data
     steps_dict: Dict[int, List[dict]] = {}
-    for row in ws.iter_rows(values_only=True):
+    for row in ws.iter_rows(min_row=11, values_only=True):
         if (
             not row[0]
             or not isinstance(row[0], (int, float))
@@ -370,24 +381,26 @@ def parse_assay_sheet(ws):
         ):
             continue
 
-        # Check if row[1], row[2], row[3] are numeric before converting
+        # Check if row values are numeric before converting
+        # Column mapping: 0=loop, 1=probe, 2=plate, 3=column, 4=sec, 5=rpm, 6=steptype
         try:
             loop_num = int(row[0])
-            plate = int(row[1])
-            column = int(row[2])
-            probe_column = int(row[3])
+            probe_column = int(row[1])
+            plate = int(row[2])
+            column = int(row[3])
         except (ValueError, TypeError):
             continue
 
-        step_type_str = str(row[4]).strip().lower() if len(row) > 4 and row[4] else ""
         try:
-            time = int(row[5]) if len(row) > 5 and row[5] else 0
+            time = int(row[4]) if len(row) > 4 and row[4] is not None else 0
         except (ValueError, TypeError):
             time = 0
         try:
-            speed = int(row[6]) if len(row) > 6 and row[6] else 0
+            speed = int(row[5]) if len(row) > 5 and row[5] is not None else 0
         except (ValueError, TypeError):
             speed = 0
+        
+        step_type_str = str(row[6]).strip().lower() if len(row) > 6 and row[6] else ""
 
         sample_column = (plate - 1) * 12 + column
 
