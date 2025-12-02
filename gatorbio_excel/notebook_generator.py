@@ -216,7 +216,7 @@ def generate_liquid_handler_notebook(
             )
 
     sample_loading_lines = ["## Sample Stock Placement\n"]
-    manual_positions = {"assay": set(), "max": set()}
+    manual_positions = set()  # Use single set to prevent duplicates across assay and max plates
 
     resource_volume_uL = defaultdict(float)
     for res in {"stock_buffer", "stock_regeneration", "stock_neutralization"}:
@@ -303,6 +303,7 @@ def generate_liquid_handler_notebook(
                 "from pylabrobot.resources import Deck, Coordinate\n",
                 "from pylabrobot.liquid_handling import Strictness, set_strictness\n",
                 "from pylabrobot.resources.hamilton import STARDeck\n",
+                "from pylabrobot.liquid_handling.utils import get_wide_single_resource_liquid_op_offsets"
                 "import time\n",
                 "\n",
                 'lh = LiquidHandler(backend=STARBackend(read_timeout=600), deck=STARDeck(core_grippers="1000uL-5mL-on-waste"))\n',
@@ -506,8 +507,8 @@ def generate_liquid_handler_notebook(
         "        await lh.pick_up_tips(tip_resources, use_channels=list(channel_set))\n",
         "    if BUFFER_SOURCE != 'trough':\n",
         "        for idx in channel_set:\n",
-        "            wide_offset = lh.backend.get_wide_single_resource_liquid_op_offsets([resource_container],num_channels=8)\n", 
-        "            await lh.aspirate([resource_container], vols=[per_channel_total[idx]], use_channels=[idx], offsets=wide_offset[idx], spread='custom')\n",
+        "            wide_offsets = [x + Coordinate(0,0,1) for x in get_wide_single_resource_liquid_op_offsets(resource_container,num_channels=8)]\n", 
+        "            await lh.aspirate([resource_container], vols=[per_channel_total[idx]], use_channels=[idx], offsets=[x for i,x in enumerate(wide_offsets) if i in idx], spread='custom')\n",
         "    for column_number, volumes in column_transfers:\n",
         "        channels_to_use = []\n",
         "        volumes_filtered = []\n",
@@ -620,10 +621,13 @@ def generate_liquid_handler_notebook(
         row_letter = record["row_letter"]
         start_col = record["start_col"]
         offsets = record.setdefault("next_offset", {"assay": 0, "max": 0})
-        offset_base = offsets[plate_kind]
-        final_volume_ul = ASSAY_DILUTION_VOLUME_UL if plate_kind == "assay" else MAX_DILUTION_VOLUME_UL
-        map_dict = sample_dilution_map if plate_kind == "assay" else max_dilution_map
-        manual_key = "assay" if plate_kind == "assay" else "max"
+        
+        # For combined sequences, use the maximum offset to ensure we don't overlap
+        # Use the larger of the two offsets as the base
+        offset_base = max(offsets["assay"], offsets["max"])
+        
+        # Use assay volume for dilution calculations (they should be the same anyway)
+        final_volume_ul = ASSAY_DILUTION_VOLUME_UL
 
         def target_details_for_offset(offset):
             absolute_column = start_col + offset
@@ -660,10 +664,30 @@ def generate_liquid_handler_notebook(
             factor_out = compute_factor(curr_conc, next_conc)
             transfer_out = final_volume_ul / factor_out if factor_out and factor_out > 1 else 0.0
 
-            base_total = final_volume_ul + transfer_out
-            buffer_prefill = base_total - transfer_in if idx > 0 else 0.0
-            if buffer_prefill < 0:
+            # Calculate base_total: for consistency, use the same calculation for all steps
+            # This ensures buffer_prefill is the same when dilution factors are the same
+            if idx == len(sequence) - 1:
+                # Last step: use same base_total as intermediate steps for consistency
+                # Calculate what transfer_out would be if there was a next step with same factor
+                if factor_in and factor_in > 1:
+                    # Assume same dilution factor continues (for consistency)
+                    base_total = final_volume_ul + (final_volume_ul / factor_in)
+                else:
+                    # No factor available, just use final_volume_ul
+                    base_total = final_volume_ul
+            else:
+                # All other steps: base_total includes reserve for next dilution
+                base_total = final_volume_ul + transfer_out
+            
+            # Calculate buffer_prefill: volume of buffer to add before transfer_in
+            # For first step: no buffer needed (stock is loaded directly)
+            # For all other steps: buffer_prefill = base_total - transfer_in
+            if idx == 0:
                 buffer_prefill = 0.0
+            else:
+                buffer_prefill = base_total - transfer_in
+                if buffer_prefill < 0:
+                    buffer_prefill = 0.0
 
             plan.append(
                 {
@@ -697,9 +721,14 @@ def generate_liquid_handler_notebook(
                 )
             occupied_dilution_positions[plate_resource_name][target_well] = sample_id
 
-            map_dict[(sample_id, well_idx)] = (plate_resource_name, target_well)
+            # Map to the appropriate final plate based on the occurrence's plate type
+            occ_plate_kind = occ.get("plate")
+            if occ_plate_kind == "assay":
+                sample_dilution_map[(sample_id, well_idx)] = (plate_resource_name, target_well)
+            elif occ_plate_kind == "max":
+                max_dilution_map[(sample_id, well_idx)] = (plate_resource_name, target_well)
 
-            liquid_desc = describe_liquid(plate_kind, occ.get("type"))
+            liquid_desc = describe_liquid(occ_plate_kind, occ.get("type"))
             transfer_in = entry["transfer_in"]
             transfer_out = entry["transfer_out"]
             base_total = entry["base_total"]
@@ -726,9 +755,11 @@ def generate_liquid_handler_notebook(
                     if transfer_out > 0 and not use_single_well:
                         message += f"; reserving {transfer_out:.1f} µL for next dilution"
                 else:
-                    key = (sample_id, well_idx)
-                    if key not in manual_positions[manual_key]:
-                        manual_positions[manual_key].add(key)
+                    # Use the occurrence's plate kind for the key (occ_plate_kind already defined above)
+                    key = (sample_id, well_idx, occ_plate_kind)
+                    if key not in manual_positions:
+                        manual_positions.add(key)
+                        manual_key = "assay" if occ_plate_kind == "assay" else "max"
                         total_volume_mL = load_volume / 1000
                         note = " (includes reserve for next dilution)" if transfer_out > 0 and not use_single_well else ""
                         sample_loading_lines.append(
@@ -769,7 +800,10 @@ def generate_liquid_handler_notebook(
                     f"# No dilution transfer required for {target_well}; volume maintained at {base_total:.1f} µL"
                 )
 
-        record["next_offset"][plate_kind] = offset_base + (1 if use_single_well else len(plan))
+        # Update both offsets to the same value since we're using combined sequences
+        new_offset = offset_base + (1 if use_single_well else len(plan))
+        record["next_offset"]["assay"] = new_offset
+        record["next_offset"]["max"] = new_offset
 
     def describe_liquid(plate_kind, type_label):
         """Describe liquid type using string label instead of numeric code."""
@@ -830,16 +864,17 @@ def generate_liquid_handler_notebook(
                 if occ not in ordered_occurrences:
                     ordered_occurrences.append(occ)
 
-        assay_sequence = [occ for occ in ordered_occurrences if occ["plate"] == "assay"]
-        max_sequence = [occ for occ in ordered_occurrences if occ["plate"] == "max"]
-
-        if assay_sequence:
-            column_sequences["assay"][record["start_col"]].append(
-                (sample_id, record, stock_resource, assay_sequence)
-            )
-        if max_sequence:
-            column_sequences["max"][record["start_col"]].append(
-                (sample_id, record, stock_resource, max_sequence)
+        # Combine all occurrences across both plates and sort by concentration (descending)
+        # This ensures all dilutions are calculated together for the complete concentration series
+        combined_sequence = ordered_occurrences.copy()
+        combined_sequence.sort(key=lambda occ: occ.get("concentration", -1.0), reverse=True)
+        
+        # Only process if there are occurrences to dilute
+        if combined_sequence:
+            # Use the first plate_kind found for the column assignment (doesn't matter which)
+            first_plate_kind = combined_sequence[0]["plate"]
+            column_sequences[first_plate_kind][record["start_col"]].append(
+                (sample_id, record, stock_resource, combined_sequence)
             )
 
     for plate_kind in ("assay", "max"):
