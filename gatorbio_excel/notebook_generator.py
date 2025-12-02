@@ -303,7 +303,7 @@ def generate_liquid_handler_notebook(
                 "from pylabrobot.resources import Deck, Coordinate\n",
                 "from pylabrobot.liquid_handling import Strictness, set_strictness\n",
                 "from pylabrobot.resources.hamilton import STARDeck\n",
-                "from pylabrobot.liquid_handling.utils import get_wide_single_resource_liquid_op_offsets"
+                "from pylabrobot.liquid_handling.utils import get_wide_single_resource_liquid_op_offsets\n"
                 "import time\n",
                 "\n",
                 'lh = LiquidHandler(backend=STARBackend(read_timeout=600), deck=STARDeck(core_grippers="1000uL-5mL-on-waste"))\n',
