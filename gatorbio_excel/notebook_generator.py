@@ -337,7 +337,7 @@ def generate_liquid_handler_notebook(
         "TIP_CARRIER_RAIL = 7\n",
         "\n",
         "# Mixing parameters\n",
-        "MIX_CYCLES = 6\n",
+        "MIX_CYCLES = 10\n",
         "MIX_VOLUME = 200  # µL per mix\n",
         "MIX_FLOW_RATE = 100  # µL/s\n",
         "CHANGE_TIPS_BETWEEN_DILUTIONS = False\n",
