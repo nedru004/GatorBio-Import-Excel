@@ -1095,13 +1095,13 @@ def generate_liquid_handler_notebook(
                     if is_stock:
                         # Stock sample: show full name in bold
                         if concentration > 0:
-                            cell_content = f"**{sample_name}** ({concentration:.0f})"
+                            cell_content = f"**{sample_name}** ({concentration:.2f})"
                         else:
                             cell_content = f"**{sample_name}**"
                     else:
                         # Dilution: just show concentration (user knows it's part of the same sample)
                         if concentration > 0:
-                            cell_content = f"({concentration:.0f})"
+                            cell_content = f"({concentration:.2f})"
                         else:
                             cell_content = "—"
                 else:
