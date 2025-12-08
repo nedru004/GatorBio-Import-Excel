@@ -766,7 +766,17 @@ def generate_liquid_handler_notebook(
             # Track all dilution wells (including serial dilutions) for visual table
             # is_stock = True only for the first well (offset_increment == 0)
             is_stock = (offset_increment == 0)
-            dilution_plate_layouts[plate_resource_name][target_well] = (sample_id, conc_display, is_stock)
+            # Only track if this well isn't already tracked, or if this is the stock (first) entry
+            # This ensures samples with no dilution are still shown with their name
+            # Don't overwrite a stock entry with a non-stock entry
+            existing_entry = dilution_plate_layouts[plate_resource_name].get(target_well)
+            if existing_entry:
+                existing_is_stock = existing_entry[2] if len(existing_entry) > 2 else False
+                # Only update if this is a stock entry or if existing is not a stock
+                if is_stock or not existing_is_stock:
+                    dilution_plate_layouts[plate_resource_name][target_well] = (sample_id, conc_display, is_stock)
+            else:
+                dilution_plate_layouts[plate_resource_name][target_well] = (sample_id, conc_display, is_stock)
             
             if use_single_well and offset_increment > 0:
                 dilution_logs.append(
