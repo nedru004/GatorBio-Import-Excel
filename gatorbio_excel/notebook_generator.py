@@ -20,6 +20,7 @@ def generate_liquid_handler_notebook(
     excel_path: Path | str,
     output_path: Path | str | None = None,
     buffer_source: str = "tube",
+    skip_no_dilution_samples: bool = False,
 ) -> Path:
     """Generate a Jupyter notebook for liquid handling using pylabrobot.
     
@@ -27,6 +28,7 @@ def generate_liquid_handler_notebook(
         excel_path: Path to the Excel file to process
         output_path: Path for the output notebook (default: same name as Excel with .ipynb)
         buffer_source: Buffer source type - "tube" for 50mL tube or "trough" for 60mL trough (default: "tube")
+        skip_no_dilution_samples: If True, skip pipetting samples with no dilution (user will add manually) (default: False)
     """
 
     excel_path = Path(excel_path)
@@ -217,6 +219,11 @@ def generate_liquid_handler_notebook(
 
     sample_loading_lines = ["## Sample Stock Placement\n"]
     manual_positions = set()  # Use single set to prevent duplicates across assay and max plates
+    
+    # Track sample placements for visual table generation
+    # Track both initial stock placements and all dilution wells with their concentrations
+    # Format: plate_name -> {well: (sample_id, concentration, is_stock)}
+    dilution_plate_layouts: Dict[str, Dict[str, Tuple[str, float, bool]]] = defaultdict(dict)
 
     resource_volume_uL = defaultdict(float)
     for res in {"stock_buffer", "stock_regeneration", "stock_neutralization"}:
@@ -628,6 +635,28 @@ def generate_liquid_handler_notebook(
         
         # Use assay volume for dilution calculations (they should be the same anyway)
         final_volume_ul = ASSAY_DILUTION_VOLUME_UL
+        
+        # Check if this sample has no dilution (only one unique concentration)
+        unique_concs = {
+            occ.get("concentration")
+            for occ in sequence
+            if occ.get("concentration") and occ.get("concentration") > 0
+        }
+        use_single_well = len(unique_concs) <= 1
+        
+        # If skipping no-dilution samples, just map them to final plates and return
+        if skip_no_dilution_samples and use_single_well:
+            for occ in sequence:
+                well_idx = occ["well_idx"]
+                occ_plate_kind = occ.get("plate")
+                
+                # Still create a mapping entry so they can be transferred to final plate
+                # Use a placeholder well position (will need manual addition)
+                if occ_plate_kind == "assay":
+                    sample_dilution_map[(sample_id, well_idx)] = ("MANUAL", f"{sample_id}_manual")
+                elif occ_plate_kind == "max":
+                    max_dilution_map[(sample_id, well_idx)] = ("MANUAL", f"{sample_id}_manual")
+            return
 
         def target_details_for_offset(offset):
             absolute_column = start_col + offset
@@ -734,6 +763,11 @@ def generate_liquid_handler_notebook(
             base_total = entry["base_total"]
             buffer_prefill = entry["buffer_prefill"]
 
+            # Track all dilution wells (including serial dilutions) for visual table
+            # is_stock = True only for the first well (offset_increment == 0)
+            is_stock = (offset_increment == 0)
+            dilution_plate_layouts[plate_resource_name][target_well] = (sample_id, conc_display, is_stock)
+            
             if use_single_well and offset_increment > 0:
                 dilution_logs.append(
                     f"# {sample_id} reuses {target_well}; no additional buffer or stock required"
@@ -754,6 +788,7 @@ def generate_liquid_handler_notebook(
                     message = f"Loaded {sample_id} {liquid_desc} into {target_well} ({load_volume:.1f} µL)"
                     if transfer_out > 0 and not use_single_well:
                         message += f"; reserving {transfer_out:.1f} µL for next dilution"
+                    # Note: Tracking happens before this point in the loop, so no need to track again here
                 else:
                     # Use the occurrence's plate kind for the key (occ_plate_kind already defined above)
                     key = (sample_id, well_idx, occ_plate_kind)
@@ -765,6 +800,7 @@ def generate_liquid_handler_notebook(
                         sample_loading_lines.append(
                             f"- `{sample_id}` → `{plate_resource_name}['{target_well}']` ({total_volume_mL:.2f} mL){note}\n"
                         )
+                        # Note: Tracking happens before this point in the loop, so no need to track again here
                     message = f"Ensure {sample_id} {liquid_desc} ({load_volume:.1f} µL) is pre-loaded into {plate_resource_name} well {target_well}"
                 sample_prefill_commands.append(f"# {message}\n" if not stock_resource else f"print(\"{message}\")\n")
                 continue
@@ -1041,6 +1077,48 @@ def generate_liquid_handler_notebook(
 
     notebook["cells"][summary_cell_index]["source"] = volume_summary_lines
 
+    # Generate visual table of dilution plates
+    def generate_plate_table(plate_name: str, well_map: Dict[str, Tuple[str, float, bool]]) -> List[str]:
+        """Generate a markdown table showing a 96-well plate layout with sample names and concentrations."""
+        rows = []
+        rows.append(f"\n### {plate_name}\n")
+        rows.append("|   | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 |\n")
+        rows.append("|---|---|---|---|---|---|---|---|---|---|----|----|----|\n")
+        
+        for row_letter in "ABCDEFGH":
+            row_data = [row_letter]
+            for col_num in range(1, 13):
+                well = f"{row_letter}{col_num}"
+                well_info = well_map.get(well)
+                if well_info:
+                    sample_name, concentration, is_stock = well_info
+                    if is_stock:
+                        # Stock sample: show full name in bold
+                        if concentration > 0:
+                            cell_content = f"**{sample_name}** ({concentration:.0f})"
+                        else:
+                            cell_content = f"**{sample_name}**"
+                    else:
+                        # Dilution: just show concentration (user knows it's part of the same sample)
+                        if concentration > 0:
+                            cell_content = f"({concentration:.0f})"
+                        else:
+                            cell_content = "—"
+                else:
+                    cell_content = "—"
+                row_data.append(cell_content)
+            rows.append("| " + " | ".join(row_data) + " |\n")
+        
+        return rows
+
+    # Add visual tables for each dilution plate (show all plates, even if empty)
+    sample_loading_lines.append("\n### Dilution Plate Layout\n")
+    sample_loading_lines.append("The following tables show where each sample stock should be placed and how dilutions will be performed:\n\n")
+    for plate_name in sorted(dilution_plate_names):
+        well_map = dilution_plate_layouts.get(plate_name, {})
+        sample_loading_lines.extend(generate_plate_table(plate_name, well_map))
+        sample_loading_lines.append("\n")
+
     if len(sample_loading_lines) == 1:
         sample_loading_lines.append(
             "Robot will automatically load assay and Max Plate wells from stock tubes. No manual loading required.\n"
@@ -1052,11 +1130,15 @@ def generate_liquid_handler_notebook(
         main_code.append('print("Transferring assay dilutions to final plate...")\n')
         # Collect all entries and sort by target well position
         all_entries: List[tuple[str, str, str]] = []
+        manual_samples = []
         for (sample_id, well_idx), (source_plate, source_well) in sample_dilution_map.items():
             final_well = assay_plate[well_idx].get("WellPosition")
             if not final_well:
                 raise ValueError(f"Missing WellPosition for assay well index {well_idx}")
-            all_entries.append((source_plate, source_well, final_well))
+            if source_plate == "MANUAL":
+                manual_samples.append((sample_id, final_well))
+            else:
+                all_entries.append((source_plate, source_well, final_well))
         
         # Sort by target well position (column number, then row letter)
         all_entries.sort(key=lambda e: well_position_sort_key(e[2]))
@@ -1076,17 +1158,25 @@ def generate_liquid_handler_notebook(
             main_code.append(
                 f"await transfer_to_final_plate('final_plate', {batch_literal}, FINAL_VOLUME)\n"
             )
+        if manual_samples:
+            main_code.append('\nprint("Manual addition required for samples with no dilution:")\n')
+            for sample_id, final_well in manual_samples:
+                main_code.append(f'print("  - {sample_id} → final_plate[\'{final_well}\'] (manually add {ASSAY_FINAL_VOLUME_UL} µL)")\n')
         main_code.append("\n")
 
     if max_dilution_map:
         main_code.append('\nprint("Transferring Max Plate dilutions to final plate...")\n')
         # Collect all entries and sort by target well position
         all_entries: List[tuple[str, str, str]] = []
+        manual_samples = []
         for (sample_id, well_idx), (source_plate, source_well) in max_dilution_map.items():
             final_well = max_plate[well_idx].get("WellPosition")
             if not final_well:
                 raise ValueError(f"Missing WellPosition for Max Plate well index {well_idx}")
-            all_entries.append((source_plate, source_well, final_well))
+            if source_plate == "MANUAL":
+                manual_samples.append((sample_id, final_well))
+            else:
+                all_entries.append((source_plate, source_well, final_well))
         
         # Sort by target well position (column number, then row letter)
         all_entries.sort(key=lambda e: well_position_sort_key(e[2]))
@@ -1106,6 +1196,10 @@ def generate_liquid_handler_notebook(
             main_code.append(
                 f"await transfer_to_final_plate('max_plate_final', {batch_literal}, MAX_PLATE_FINAL_VOLUME)\n"
             )
+        if manual_samples:
+            main_code.append('\nprint("Manual addition required for samples with no dilution:")\n')
+            for sample_id, final_well in manual_samples:
+                main_code.append(f'print("  - {sample_id} → max_plate_final[\'{final_well}\'] (manually add {MAX_FINAL_VOLUME_UL} µL)")\n')
         main_code.append("\n")
 
     main_code.append('\nprint("Liquid handling complete!")')
