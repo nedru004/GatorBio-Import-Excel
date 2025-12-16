@@ -59,8 +59,8 @@ def show_file_dialog() -> Tuple[Optional[str], Optional[str]]:
     return excel_file, output_file
 
 
-def show_file_dialog_notebook() -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
-    """Show a GUI popup to select input Excel file, output notebook file, buffer source, and no-dilution handling."""
+def show_file_dialog_notebook() -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str], Optional[str]]:
+    """Show a GUI popup to select input Excel file, output notebook file, buffer source, no-dilution handling, and tube dilutions option."""
 
     import tkinter as tk
     from tkinter import filedialog, ttk
@@ -127,16 +127,25 @@ def show_file_dialog_notebook() -> Tuple[Optional[str], Optional[str], Optional[
     tk.Radiobutton(no_dilution_frame, text="Pipette automatically", variable=no_dilution_var, value="pipette").pack(side=tk.LEFT, padx=5)
     tk.Radiobutton(no_dilution_frame, text="Skip (manual addition)", variable=no_dilution_var, value="skip").pack(side=tk.LEFT, padx=5)
 
+    # Tube-based dilutions option
+    tk.Label(options_frame, text="Dilute samples from tubes (K/L34):", font=("Arial", 10, "bold")).grid(row=2, column=0, sticky="w", pady=10)
+    tube_dilutions_var = tk.StringVar(value="no")
+    tube_frame = tk.Frame(options_frame)
+    tube_frame.grid(row=2, column=1, sticky="w", pady=10)
+    tk.Radiobutton(tube_frame, text="No", variable=tube_dilutions_var, value="no").pack(side=tk.LEFT, padx=5)
+    tk.Radiobutton(tube_frame, text="Yes", variable=tube_dilutions_var, value="yes").pack(side=tk.LEFT, padx=5)
+
     # OK/Cancel buttons
     button_frame = tk.Frame(options_frame)
-    button_frame.grid(row=2, column=0, columnspan=2, pady=20)
+    button_frame.grid(row=3, column=0, columnspan=2, pady=20)
     
-    result = {"confirmed": False, "buffer_source": None, "no_dilution_handling": None}
+    result = {"confirmed": False, "buffer_source": None, "no_dilution_handling": None, "tube_dilutions": None}
     
     def on_ok():
         result["confirmed"] = True
         result["buffer_source"] = buffer_var.get()
         result["no_dilution_handling"] = no_dilution_var.get()
+        result["tube_dilutions"] = tube_dilutions_var.get()
         dialog.destroy()
     
     def on_cancel():
@@ -150,9 +159,9 @@ def show_file_dialog_notebook() -> Tuple[Optional[str], Optional[str], Optional[
     root.destroy()
     
     if not result["confirmed"]:
-        return None, None, None, None
+        return None, None, None, None, None
 
-    return excel_file, output_file, result["buffer_source"], result["no_dilution_handling"]
+    return excel_file, output_file, result["buffer_source"], result["no_dilution_handling"], result["tube_dilutions"]
 
 
 def main() -> None:
@@ -191,6 +200,11 @@ def main() -> None:
             default="pipette",
             help="How to handle samples with no dilution: 'pipette' to pipette automatically, 'skip' to skip (manual addition) (default: pipette)",
         )
+        parser.add_argument(
+            "--tube-dilutions",
+            action="store_true",
+            help="If set, dilute tube-based samples (names in K34, concentrations in L34) into the first dilution-plate well to match the first series concentration.",
+        )
 
         args = parser.parse_args()
 
@@ -200,7 +214,8 @@ def main() -> None:
                     args.excel_file, 
                     args.output, 
                     buffer_source=args.buffer_source,
-                    skip_no_dilution_samples=(args.no_dilution_handling == "skip")
+                    skip_no_dilution_samples=(args.no_dilution_handling == "skip"),
+                    use_tube_dilutions=bool(args.tube_dilutions),
                 )
             else:
                 generate_asy_file(args.excel_file, args.output)
@@ -241,12 +256,13 @@ def main() -> None:
         else:
             result = show_file_dialog_notebook()
             if result and result[0] and result[1] and result[2] and result[3]:
-                excel_file, output_file, buffer_source, no_dilution_handling = result
+                excel_file, output_file, buffer_source, no_dilution_handling, tube_dilutions = result
                 generate_liquid_handler_notebook(
                     excel_file, 
                     output_file, 
                     buffer_source=buffer_source,
-                    skip_no_dilution_samples=(no_dilution_handling == "skip")
+                    skip_no_dilution_samples=(no_dilution_handling == "skip"),
+                    use_tube_dilutions=(tube_dilutions == "yes"),
                 )
                 messagebox.showinfo("Success", f"Successfully generated:\n{output_file}")
 

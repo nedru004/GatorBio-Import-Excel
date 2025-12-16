@@ -21,6 +21,7 @@ def generate_liquid_handler_notebook(
     output_path: Path | str | None = None,
     buffer_source: str = "tube",
     skip_no_dilution_samples: bool = False,
+    use_tube_dilutions: bool = False,
 ) -> Path:
     """Generate a Jupyter notebook for liquid handling using pylabrobot.
     
@@ -29,6 +30,7 @@ def generate_liquid_handler_notebook(
         output_path: Path for the output notebook (default: same name as Excel with .ipynb)
         buffer_source: Buffer source type - "tube" for 50mL tube or "trough" for 60mL trough (default: "tube")
         skip_no_dilution_samples: If True, skip pipetting samples with no dilution (user will add manually) (default: False)
+        use_tube_dilutions: If True, use tube-based stocks (K/L34) and dilute them to match the first series concentration in the first dilution-plate well (default: False)
     """
 
     excel_path = Path(excel_path)
@@ -41,7 +43,8 @@ def generate_liquid_handler_notebook(
     if "Experiment" not in sheets:
         raise ValueError("Experiment sheet not found in Excel file")
 
-    assay_plate, max_plate = parse_plate_layout(sheets["Experiment"])
+    experiment_ws = sheets["Experiment"]
+    assay_plate, max_plate = parse_plate_layout(experiment_ws)
 
     initial_concentrations: Dict[str, float] = {}
 
@@ -49,6 +52,31 @@ def generate_liquid_handler_notebook(
     MAX_DILUTION_VOLUME_UL = 300
     ASSAY_FINAL_VOLUME_UL = 200
     MAX_FINAL_VOLUME_UL = 200
+
+    # Optional: tube-based stocks for normalization (names in K34, conc in L34 as mg/mL)
+    tube_samples_mg_per_ml: Dict[str, float] = {}
+    if use_tube_dilutions:
+        try:
+            # Read a reasonable range of rows starting at 34 (K/L34 downward)
+            for excel_row_idx in range(34, 201):
+                name_cell = experiment_ws.cell(row=excel_row_idx, column=11).value  # K
+                conc_cell = experiment_ws.cell(row=excel_row_idx, column=12).value  # L
+
+                name = str(name_cell).strip() if name_cell else ""
+                if not name:
+                    continue
+
+                try:
+                    conc_mg_per_ml = float(conc_cell)
+                except (TypeError, ValueError):
+                    continue
+
+                if conc_mg_per_ml <= 0:
+                    continue
+                tube_samples_mg_per_ml[name] = conc_mg_per_ml
+        except Exception:
+            # If anything goes wrong here, fall back silently rather than breaking notebook generation.
+            tube_samples_mg_per_ml = {}
 
     buffer_resource_name = "stock_buffer"
 
@@ -142,7 +170,7 @@ def generate_liquid_handler_notebook(
     combined_sample_ids = sorted(combined_samples.keys())
     assay_ids = [sid for sid in combined_sample_ids if combined_samples[sid]["has_assay"]]
     max_ids = [sid for sid in combined_sample_ids if combined_samples[sid]["has_max"]]
-
+    
     row_usage = [1] * 8  # next available column per row (1-indexed)
     max_column_used = 1
     MAX_DILUTION_PLATES = 2
@@ -169,13 +197,13 @@ def generate_liquid_handler_notebook(
             current_row_pointer = (row_idx + 1) % 8
             assigned = True
             break
-
+        
         if not assigned:
             raise ValueError(
                 "Unable to assign dilutions without overlapping wells. Reduce the number of dilutions "
                 "or extend the deck configuration."
             )
-
+    
     max_column_used = max(1, max_column_used)
     plates_needed = max(1, ceil(max_column_used / 12))
     if plates_needed > 2:
@@ -186,6 +214,64 @@ def generate_liquid_handler_notebook(
     dilution_plate_names = ["dilution_plate"]
     if plates_needed >= 2:
         dilution_plate_names.append("dilution_plate_2")
+
+    # Optional tube-based normalization plan: map sample_id -> dilution details
+    tube_dilution_plan: Dict[str, Dict[str, object]] = {}
+    if use_tube_dilutions and tube_samples_mg_per_ml:
+        for tube_name, conc_mg_per_ml in tube_samples_mg_per_ml.items():
+            # Match tube name to combined_samples sample_id (case-insensitive)
+            matched_id = None
+            for known_id in combined_sample_ids:
+                if known_id and known_id.strip().lower() == tube_name.strip().lower():
+                    matched_id = known_id
+                    break
+            if not matched_id:
+                continue
+
+            record = combined_samples.get(matched_id)
+            if not record or not record.get("levels"):
+                continue
+
+            target_conc_ug_per_ml = record["levels"][0]["value"]
+            if not target_conc_ug_per_ml or target_conc_ug_per_ml <= 0:
+                continue
+
+            stock_conc_ug_per_ml = conc_mg_per_ml * 1000.0
+            if stock_conc_ug_per_ml <= 0:
+                continue
+
+            # Use the same final volume as other dilutions in the deep-well plate
+            V_final_ul = ASSAY_DILUTION_VOLUME_UL
+
+            # C1 * V1 = C2 * V2  =>  V1 = (C2/C1) * V2
+            V_tube_ul = (target_conc_ug_per_ml / stock_conc_ug_per_ml) * V_final_ul
+            if V_tube_ul < 0:
+                continue
+            if V_tube_ul > V_final_ul:
+                # Cannot concentrate; skip if tube is more dilute than target
+                continue
+
+            V_buffer_ul = V_final_ul - V_tube_ul
+
+            # Place into the first assigned dilution well for this sample (row_letter + start_col)
+            row_letter = record.get("row_letter")
+            start_col = record.get("start_col")
+            if not row_letter or start_col is None:
+                continue
+
+            target_plate_name = dilution_plate_names[0]
+            target_well = f"{row_letter}{start_col}"
+
+            tube_dilution_plan[matched_id] = {
+                "tube_name": tube_name,
+                "tube_conc_mg_per_ml": conc_mg_per_ml,
+                "stock_conc_ug_per_ml": stock_conc_ug_per_ml,
+                "target_conc_ug_per_ml": target_conc_ug_per_ml,
+                "tube_volume_ul": V_tube_ul,
+                "buffer_volume_ul": V_buffer_ul,
+                "plate_name": target_plate_name,
+                "well": target_well,
+            }
 
     column_sequences = {
         "assay": defaultdict(list),
@@ -230,6 +316,18 @@ def generate_liquid_handler_notebook(
         resource_volume_uL[res] = 0.0
     for res in {val for val in stock_resource_map.values() if val}:
         resource_volume_uL.setdefault(res, 0.0)
+
+    # Account for buffer and tube usage in tube-based normalization plan
+    if tube_dilution_plan:
+        for details in tube_dilution_plan.values():
+            tube_name = details["tube_name"]
+            tube_volume_ul = float(details["tube_volume_ul"])
+            buffer_volume_ul = float(details["buffer_volume_ul"])
+            # Track tube usage separately
+            resource_volume_uL.setdefault(tube_name, 0.0)
+            resource_volume_uL[tube_name] += tube_volume_ul
+            # Buffer usage is from stock_buffer
+            resource_volume_uL[buffer_resource_name] += buffer_volume_ul
 
     tube_resources = sorted(resource_volume_uL.keys())
 
@@ -328,6 +426,8 @@ def generate_liquid_handler_notebook(
         }
     )
 
+    tube_dilution_plan_repr = repr(tube_dilution_plan)
+
     variables_code = [
         "# Assay plate parameters\n",
         "FINAL_VOLUME = 200  # µL transferred to assay 96-well plate\n",
@@ -342,6 +442,8 @@ def generate_liquid_handler_notebook(
         "PLATE_CARRIER_RAIL = 19\n",
         "TUBE_CARRIER_RAIL = 35\n",
         "TIP_CARRIER_RAIL = 7\n",
+        "\n",
+        f"tube_dilution_plan = {tube_dilution_plan_repr}\n",
         "\n",
         "# Mixing parameters\n",
         "MIX_CYCLES = 10\n",
@@ -391,6 +493,7 @@ def generate_liquid_handler_notebook(
         "    Cor_Falcon_tube_50mL_Vb,\n",
         "    Trough_CAR_5R60_A00,\n",
         "    hamilton_1_trough_60ml_Vb,\n",
+        "    hamilton_tube_carrier_32_a00_insert_eppendorf_1_5mL,\n",
         ")\n",
         "from pylabrobot.liquid_handling.standard import Mix\n",
         "\n",
@@ -715,8 +818,8 @@ def generate_liquid_handler_notebook(
                 buffer_prefill = 0.0
             else:
                 buffer_prefill = base_total - transfer_in
-                if buffer_prefill < 0:
-                    buffer_prefill = 0.0
+            if buffer_prefill < 0:
+                buffer_prefill = 0.0
 
             plan.append(
                 {
@@ -777,7 +880,7 @@ def generate_liquid_handler_notebook(
                     dilution_plate_layouts[plate_resource_name][target_well] = (sample_id, conc_display, is_stock)
             else:
                 dilution_plate_layouts[plate_resource_name][target_well] = (sample_id, conc_display, is_stock)
-            
+
             if use_single_well and offset_increment > 0:
                 dilution_logs.append(
                     f"# {sample_id} reuses {target_well}; no additional buffer or stock required"
@@ -1072,7 +1175,10 @@ def generate_liquid_handler_notebook(
     else:
         main_code.append("# No serial dilutions required\n\n")
 
-    volume_resources = sorted(resource_volume_uL.keys())
+    # Separate tube-based sample resources from bulk stock resources
+    tube_sample_names = sorted({details["tube_name"] for details in tube_dilution_plan.values()}) if tube_dilution_plan else []
+    volume_resources = sorted(name for name in resource_volume_uL.keys() if name not in tube_sample_names)
+
     volume_summary_lines = [
         "## Stock Volume Requirements\n",
         "Estimated minimum volumes to load in each 50 mL tube (add extra for dead volume):\n",
@@ -1080,6 +1186,16 @@ def generate_liquid_handler_notebook(
     for resource in volume_resources:
         volume_uL = resource_volume_uL.get(resource, 0.0)
         volume_summary_lines.append(f"- `{resource}`: {volume_uL/1000:.2f} mL (≈ {volume_uL:.0f} µL)\n")
+    if tube_dilution_plan:
+        volume_summary_lines.append("\n### Tube-based samples (1.5 mL tubes, K/L34)\n")
+        for _, details in tube_dilution_plan.items():
+            tube_name = details["tube_name"]
+            tube_vol = float(details["tube_volume_ul"])
+            buffer_vol = float(details["buffer_volume_ul"])
+            volume_summary_lines.append(
+                f"- `{tube_name}`: {tube_vol/1000:.2f} mL (≈ {tube_vol:.2f} µL) from tube; "
+                f"buffer: {buffer_vol/1000:.2f} mL (≈ {buffer_vol:.2f} µL)\n"
+            )
     if buffer_resource_name in volume_resources:
         volume_summary_lines.append(
             "\nProbe wells buffer usage is included in the `stock_buffer` total.\n"
@@ -1123,7 +1239,13 @@ def generate_liquid_handler_notebook(
 
     # Add visual tables for each dilution plate (show all plates, even if empty)
     sample_loading_lines.append("\n### Dilution Plate Layout\n")
-    sample_loading_lines.append("The following tables show where each sample stock should be placed and how dilutions will be performed:\n\n")
+    sample_loading_lines.append("The following tables show where each sample stock should be placed and how dilutions will be performed.\n")
+    if tube_dilution_plan:
+        sample_loading_lines.append(
+            "\nTube-based samples (from K/L34) are normalized in the first dilution well to match the highest concentration in the series.\n"
+        )
+    sample_loading_lines.append("\n")
+
     for plate_name in sorted(dilution_plate_names):
         well_map = dilution_plate_layouts.get(plate_name, {})
         sample_loading_lines.extend(generate_plate_table(plate_name, well_map))
